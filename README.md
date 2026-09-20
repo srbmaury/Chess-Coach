@@ -2,6 +2,8 @@
 
 Turn Chess.com game history into a personalized training plan.
 
+**Live demo:** https://chess-ml-coach.onrender.com
+
 Chess ML Coach is a local-first chess improvement tool that combines:
 
 - **Stockfish** for objective position evaluation, best moves, principal variations, and centipawn loss;
@@ -45,8 +47,8 @@ Chess.com ingestion uses the public, read-only PubAPI.
 ## Setup
 
 ```bash
-git clone https://github.com/srbmaury/Chess.git
-cd Chess
+git clone https://github.com/srbmaury/Chess-Coach.git
+cd Chess-Coach
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
