@@ -37,9 +37,10 @@ def test_lock_held_by_a_live_process_still_raises(tmp_path):
     # The current test process is very much alive.
     lock_path.write_text(str(os.getpid()), encoding="utf-8")
 
-    with pytest.raises(ProfileBusyError):
-        with exclusive_profile_lock(lock_path, error_message=_error_message):
-            pass
+    with pytest.raises(ProfileBusyError), exclusive_profile_lock(
+        lock_path, error_message=_error_message
+    ):
+        pass
     assert lock_path.exists()
 
 
@@ -50,7 +51,8 @@ def test_lock_with_unreadable_contents_is_left_alone(tmp_path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text("", encoding="utf-8")
 
-    with pytest.raises(ProfileBusyError):
-        with exclusive_profile_lock(lock_path, error_message=_error_message):
-            pass
+    with pytest.raises(ProfileBusyError), exclusive_profile_lock(
+        lock_path, error_message=_error_message
+    ):
+        pass
     assert lock_path.exists()
