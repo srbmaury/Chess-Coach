@@ -190,6 +190,4 @@ def alternatives_show_uniqueness(
     expected_gap = first.expected_score - second.expected_score
     if expected_gap >= 0.08:
         return True
-    if first.cp is not None and second.cp is not None and first.cp - second.cp >= 100:
-        return True
-    return False
+    return first.cp is not None and second.cp is not None and first.cp - second.cp >= 100

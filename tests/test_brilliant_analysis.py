@@ -6,7 +6,10 @@ import pandas as pd
 
 from chess_ml_coach.config import Settings
 from chess_ml_coach.engine import analyze_user_moves
-from chess_ml_coach.move_quality import alternatives_show_uniqueness, sacrifices_material_after_reply
+from chess_ml_coach.move_quality import (
+    alternatives_show_uniqueness,
+    sacrifices_material_after_reply,
+)
 
 SACRIFICE_FEN = "3rk3/8/8/8/8/8/8/3QK3 w - - 0 1"
 
