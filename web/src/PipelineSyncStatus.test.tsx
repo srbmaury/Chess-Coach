@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
 
 vi.mock('react-chessboard', () => ({
@@ -53,6 +53,7 @@ test('shows sync progress in months', async () => {
 
   render(<App />)
   expect(await screen.findByText('Build your coach')).toBeTruthy()
+  await waitFor(() => expect(getSource()).not.toBeNull())
 
   emit(getSource(), {
     stage: 'sync',
@@ -78,6 +79,7 @@ test('shows analyze and puzzles progress with meaningful units', async () => {
 
   render(<App />)
   expect(await screen.findByText('Build your coach')).toBeTruthy()
+  await waitFor(() => expect(getSource()).not.toBeNull())
 
   emit(getSource(), {
     stage: 'analyze',
@@ -112,6 +114,7 @@ test('renders flattened train results instead of object strings', async () => {
 
   render(<App />)
   expect(await screen.findByText('Build your coach')).toBeTruthy()
+  await waitFor(() => expect(getSource()).not.toBeNull())
 
   emit(getSource(), {
     stage: 'train',
@@ -136,6 +139,7 @@ test('renders sync result fields instead of an object string', async () => {
 
   render(<App />)
   expect(await screen.findByText('Build your coach')).toBeTruthy()
+  await waitFor(() => expect(getSource()).not.toBeNull())
 
   emit(getSource(), {
     stage: 'sync',
