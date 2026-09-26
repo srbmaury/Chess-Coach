@@ -90,6 +90,23 @@ test('attaches the refreshed access token while preserving request headers', asy
   expect(headers.get('X-Request-ID')).toBe('123')
 })
 
+test('keeps headers carried by a Request input and overlays init headers', async () => {
+  const fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+  vi.stubGlobal('fetch', fetchMock)
+  const request = new Request(new URL('/api/hosted/jobs', window.location.href), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Trace': 'from-request' },
+  })
+
+  await authorizedFetch(oldSession as never, request, { headers: { 'X-Trace': 'from-init' } })
+
+  const [, options] = fetchMock.mock.calls[0]
+  const headers = new Headers(options.headers)
+  expect(headers.get('Content-Type')).toBe('application/json')
+  expect(headers.get('X-Trace')).toBe('from-init')
+  expect(headers.get('Authorization')).toBe('Bearer fresh-token')
+})
+
 test('rejects a missing current session without sending a request', async () => {
   mocks.client.auth.getSession.mockResolvedValue({ data: { session: null }, error: null })
   const fetchMock = vi.fn()

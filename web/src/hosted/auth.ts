@@ -89,7 +89,8 @@ export async function authorizedFetch(
     throw new Error('Please sign in to continue')
   }
   if (!accessToken) throw new Error('Please sign in to continue')
-  const headers = new Headers(init.headers)
+  const headers = new Headers(input instanceof Request ? input.headers : undefined)
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value))
   headers.set('Authorization', `Bearer ${accessToken}`)
   return fetch(input, { ...init, headers })
 }

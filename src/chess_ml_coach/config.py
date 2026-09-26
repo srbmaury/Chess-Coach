@@ -59,7 +59,14 @@ class Settings:
         if self.persistence_mode == "hosted" and not self.database_url:
             raise ValueError("DATABASE_URL is required in hosted persistence mode")
         if self.is_hosted and self.supabase_url:
-            parsed = urlsplit(self.supabase_url)
+            try:
+                parsed = urlsplit(self.supabase_url)
+                _ = parsed.port
+            except ValueError:
+                # Parser errors echo the input, which may contain a misplaced credential.
+                raise ValueError(
+                    "SUPABASE_URL must be an HTTPS origin without credentials"
+                ) from None
             if not (
                 parsed.scheme == "https"
                 and parsed.hostname

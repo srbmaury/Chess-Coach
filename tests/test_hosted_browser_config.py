@@ -105,6 +105,7 @@ def test_secret_key_cannot_be_published_as_browser_key():
         "postgresql://private-user:private-password@example.invalid/chess",
         "https://private-user:private-password@project.supabase.co",
         "https://project.supabase.co?token=private-secret",
+        "https://private-user:private-password@bad\uff0fhost",
     ],
 )
 def test_database_or_credentialed_url_cannot_be_published(unsafe_url):
@@ -117,6 +118,7 @@ def test_database_or_credentialed_url_cannot_be_published(unsafe_url):
         )
     assert "private-password" not in str(exc_info.value)
     assert "private-secret" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
 
 
 def test_browser_analysis_flag_defaults_off_in_hosted_mode(monkeypatch):
