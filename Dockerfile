@@ -11,6 +11,11 @@ RUN npm run build
 
 FROM python:3.12-slim-bookworm AS app
 
+# Local-mode deployments analyze on the server and need native Stockfish. Hosted
+# deployments (CHESS_COACH_PERSISTENCE_MODE=hosted) compute in the browser and must
+# be built with INSTALL_NATIVE_STOCKFISH=false so no engine binary ships at all.
+ARG INSTALL_NATIVE_STOCKFISH=true
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     CHESS_COACH_DATA_DIR=/app/runtime/data \
@@ -19,7 +24,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STOCKFISH_PATH=/usr/games/stockfish
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y libgomp1 stockfish \
+    && apt-get install --no-install-recommends -y libgomp1 \
+    && if [ "$INSTALL_NATIVE_STOCKFISH" = "true" ]; then \
+        apt-get install --no-install-recommends -y stockfish; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -235,24 +235,28 @@ class BodyLimitMiddleware:
         if declared.isdigit() and int(declared) > self.max_bytes:
             await self._reject(send)
             return
-        received = 0
-        rejected = False
-
-        async def limited_receive():
-            nonlocal received, rejected
+        # Bodies here are small JSON; read at most the limit plus one chunk, then replay.
+        body = bytearray()
+        more = True
+        while more:
             message = await receive()
-            if message["type"] == "http.request":
-                received += len(message.get("body", b""))
-                if received > self.max_bytes:
-                    rejected = True
-                    raise _BodyTooLarge()
-            return message
-
-        try:
-            await self.app(scope, limited_receive, send)
-        except _BodyTooLarge:
-            if rejected:
+            if message["type"] != "http.request":
+                break
+            body.extend(message.get("body", b""))
+            if len(body) > self.max_bytes:
                 await self._reject(send)
+                return
+            more = message.get("more_body", False)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
 
     @staticmethod
     async def _reject(send) -> None:
@@ -262,9 +266,6 @@ class BodyLimitMiddleware:
         await send({"type": "http.response.start", "status": 413, "headers": response.raw_headers})
         await send({"type": "http.response.body", "body": response.body})
 
-
-class _BodyTooLarge(Exception):
-    pass
 
 
 def _services(request: Request, *, analysis: bool = True) -> HostedAnalysisServices:

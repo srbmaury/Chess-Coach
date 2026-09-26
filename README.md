@@ -453,6 +453,44 @@ An unset or invalid token returns `401`; a deployment without
 depends on this endpoint yet — profile claiming and entitlements are
 introduced in the next phase.
 
+### Hosted browser analysis
+
+In hosted mode the server never runs Stockfish or stores analysis on its disk. A
+signed-in user's browser runs Stockfish 19 (lite, single-threaded WebAssembly) in a Web
+Worker. It checkpoints progress to private Supabase Storage and publishes puzzles, a
+coaching report, and a lightweight mistake model. One shared job exists per player,
+game set, and analysis configuration, and one browser at a time holds its renewable
+60-second lease. Everyone else watches the progress, and if the worker's tab closes,
+another subscribed browser resumes from the last checkpoint. Results are labelled
+**community computed**: the server validates structure, game identity, and move legality,
+but cannot re-verify engine evaluations.
+
+The feature is off by default (`CHESS_COACH_HOSTED_BROWSER_ANALYSIS_ENABLED=false`) and
+also needs `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (browser-safe) and
+`SUPABASE_SECRET_KEY` (server only, never sent to browsers or logged). Merging code does
+not deploy or enable it. Follow
+[docs/hosted-browser-analysis-runbook.md](docs/hosted-browser-analysis-runbook.md) for
+migrations, the Storage bucket, Realtime, and a staged rollout. Browsers need
+WebAssembly, Web Workers, IndexedDB, compression streams, and Web Crypto. Phones and
+data-saver devices only observe by default.
+
+The browser pipeline matches the Python pipeline on a committed fixture
+(`tests/fixtures/browser_parity.json`). Regenerate it with
+`.venv/bin/python tests/browser_parity.py > tests/fixtures/browser_parity.json` whenever
+classification, features, puzzles, or the report change, then update the TypeScript
+port until `web/src/analysis/parity.test.ts` passes.
+
+#### Stockfish license
+
+The web build bundles [Stockfish.js](https://github.com/nmrugg/stockfish.js) 19.0.0
+(`stockfish-19-lite-single.js`/`.wasm`) from the `stockfish` npm package, © the
+Stockfish developers and Chess.com, licensed under the GNU GPL v3
+(`web/node_modules/stockfish/Copying.txt`). The engine is served unmodified. Its
+corresponding source is available from the upstream repository at tag `v19.0.0` and from
+[official-stockfish/Stockfish](https://github.com/official-stockfish/Stockfish). Anyone
+who distributes this web build must make that source available under the GPL on
+request.
+
 ## Local-only privacy model
 
 Personal data, PGNs, engine analysis, puzzle/review history, explanation cache, trained models, frontend dependencies/build output, and `.env` files are excluded from Git.

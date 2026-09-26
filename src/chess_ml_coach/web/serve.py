@@ -91,10 +91,18 @@ def create_served_app(
         account_repository=account_repository,
         hosted_analysis=hosted_analysis,
     )
-    enable_profiles(app, resolved, initial_username=initial_username)
+    if not resolved.is_hosted:
+        # Local profiles live on the filesystem; hosted profiles live in Postgres.
+        enable_profiles(app, resolved, initial_username=initial_username)
     assets = dist / "assets"
     if assets.exists():
         app.mount("/assets", StaticFiles(directory=assets), name="assets")
+
+    @app.api_route(
+        "/api/{full_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"], include_in_schema=False
+    )
+    def unknown_api_write(full_path: str):
+        raise HTTPException(status_code=404, detail="API route not found")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):

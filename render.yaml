@@ -13,3 +13,7 @@ services:
         value: srbmaury
       - key: CHESS_COACH_STOCKFISH_DEPTH
         value: "14"
+      # Hosted browser analysis stays off until an explicit canary (see
+      # docs/hosted-browser-analysis-runbook.md). Secrets are set in the dashboard only.
+      - key: CHESS_COACH_HOSTED_BROWSER_ANALYSIS_ENABLED
+        value: "false"

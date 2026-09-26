@@ -9,7 +9,7 @@ from pathlib import Path
 
 import chess
 import markdown as markdown_lib
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -173,7 +173,9 @@ def create_app(
     hosted_analysis: HostedAnalysisServices | None = None,
 ) -> FastAPI:
     initial = settings or Settings()
-    manager = pipeline_manager or PipelineManager(initial)
+    hosted = initial.is_hosted
+    # Hosted Render is stateless: no pipeline, native engine, or local artifact routes.
+    manager = None if hosted else pipeline_manager or PipelineManager(initial)
     adaptive = adaptive_services or AdaptiveServiceRegistry()
 
     @asynccontextmanager
@@ -201,8 +203,9 @@ def create_app(
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type"],
     )
-    app.include_router(explanation_router)
-    app.include_router(adaptive_router)
+    if not hosted:
+        app.include_router(explanation_router)
+        app.include_router(adaptive_router)
     app.include_router(hosted_router)
     install_hosted_analysis(app, hosted_analysis)
 
@@ -224,10 +227,12 @@ def create_app(
             database_ready=database_ready,
         )
 
+    local = APIRouter()
+
     def _report_path(settings: Settings) -> Path:
         return settings.data_dir / "processed" / "coaching_report.md"
 
-    @app.get("/api/dashboard", response_model=DashboardResponse)
+    @local.get("/api/dashboard", response_model=DashboardResponse)
     def dashboard() -> DashboardResponse:
         active = current()
         analysis_path = active.data_dir / "engine" / "analysis.parquet"
@@ -248,7 +253,7 @@ def create_app(
             },
         )
 
-    @app.get("/api/report")
+    @local.get("/api/report")
     def report() -> HTMLResponse:
         report_path = _report_path(current())
         if not report_path.exists():
@@ -258,7 +263,7 @@ def create_app(
             )
         return HTMLResponse(_render_report_page(report_path.read_text(encoding="utf-8")))
 
-    @app.get("/api/practice/next", response_model=PracticeNextResponse)
+    @local.get("/api/practice/next", response_model=PracticeNextResponse)
     def practice_next() -> PracticeNextResponse:
         db_path = _require_training_db(current())
         due = TrainingStore(db_path).due_puzzles(limit=1)
@@ -266,7 +271,7 @@ def create_app(
             puzzle=_public_practice_puzzle(due[0]) if due else None,
         )
 
-    @app.post(
+    @local.post(
         "/api/practice/{puzzle_id}/attempt",
         response_model=AttemptResponse,
     )
@@ -300,7 +305,7 @@ def create_app(
             source_url=puzzle.source_url or None,
         )
 
-    @app.post("/api/practice/{puzzle_id}/skip")
+    @local.post("/api/practice/{puzzle_id}/skip")
     def practice_skip(puzzle_id: str) -> dict[str, bool]:
         db_path = _require_training_db(current())
         puzzle = TrainingStore(db_path).get_puzzle(puzzle_id)
@@ -308,7 +313,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Puzzle not found")
         return {"skipped": True}
 
-    @app.get("/api/puzzles", response_model=PuzzleListResponse)
+    @local.get("/api/puzzles", response_model=PuzzleListResponse)
     def puzzles(
         quality: str | None = None,
         motif: str | None = None,
@@ -336,7 +341,7 @@ def create_app(
             offset=offset,
         )
 
-    @app.get("/api/puzzles/{puzzle_id}", response_model=PuzzleItem)
+    @local.get("/api/puzzles/{puzzle_id}", response_model=PuzzleItem)
     def puzzle_detail(puzzle_id: str) -> PuzzleItem:
         db_path = _require_training_db(current())
         item = get_puzzle(db_path, puzzle_id)
@@ -344,7 +349,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Puzzle not found")
         return PuzzleItem.model_validate(item)
 
-    @app.get("/api/progress", response_model=ProgressResponse)
+    @local.get("/api/progress", response_model=ProgressResponse)
     def progress() -> ProgressResponse:
         db_path = _require_training_db(current())
         summary = TrainingStore(db_path).progress()
@@ -362,11 +367,11 @@ def create_app(
             adaptive=AdaptiveProgressSummary(**adaptive_metrics.__dict__),
         )
 
-    @app.get("/api/pipeline/status")
+    @local.get("/api/pipeline/status")
     def pipeline_status() -> dict[str, object]:
         return jsonable_encoder(asdict(manager.snapshot()))
 
-    @app.post("/api/pipeline/{stage}", status_code=202)
+    @local.post("/api/pipeline/{stage}", status_code=202)
     def start_pipeline(
         stage: str,
         options: dict[str, object] | None = None,
@@ -381,7 +386,7 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return jsonable_encoder(asdict(snapshot))
 
-    @app.get("/api/pipeline/events")
+    @local.get("/api/pipeline/events")
     def pipeline_events(
         after_sequence: int | None = Query(default=None, ge=0),
     ) -> StreamingResponse:
@@ -409,4 +414,6 @@ def create_app(
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
+    if not hosted:
+        app.include_router(local)
     return app
