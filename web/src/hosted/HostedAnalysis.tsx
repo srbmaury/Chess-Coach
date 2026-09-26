@@ -10,6 +10,7 @@ import type { PuzzleSeed } from '../analysis/puzzles'
 import type { HostedApi } from './api'
 import type { CoordinatorSnapshot } from './coordinator'
 import type { Capabilities } from './device'
+import { useClickToMove } from '../useClickToMove'
 import Markdown from './Markdown'
 import { createDefaultServices, type CoordinatorLike, type HostedConfig, type HostedServices } from './services'
 import type { ArtifactView, JobView, ProfileView } from './types'
@@ -384,22 +385,25 @@ function Results({ results }: { results: LoadedResults | null }) {
 function Puzzles({ puzzles }: { puzzles: PuzzleSeed[] }) {
   const [index, setIndex] = useState(0)
   const [feedback, setFeedback] = useState<string | null>(null)
-  if (!puzzles.length) return <p className="muted">No puzzles yet — no significant mistakes were found.</p>
-  const puzzle = puzzles[Math.min(index, puzzles.length - 1)]
+  const puzzle = puzzles.length ? puzzles[Math.min(index, puzzles.length - 1)] : null
+  const clickToMove = useClickToMove(puzzle?.fen_before)
+  if (!puzzle) return <p className="muted">No puzzles yet — no significant mistakes were found.</p>
   const orientation = puzzle.color === 'black' ? 'black' : 'white'
   const next = () => { setIndex((index + 1) % puzzles.length); setFeedback(null) }
+  const tryMove = (sourceSquare: string, targetSquare: string | null) => {
+    if (!targetSquare) return false
+    const correct = puzzle.best_move_uci.startsWith(`${sourceSquare}${targetSquare}`)
+    setFeedback(correct ? `Correct — ${puzzle.best_move_san}` : `Not quite. The best move was ${puzzle.best_move_san}.`)
+    return false
+  }
   return <div className="practice">
     <div className="board">
       <Chessboard options={{
         position: puzzle.fen_before,
         boardOrientation: orientation,
-        onPieceDrop: ({ sourceSquare, targetSquare }: { sourceSquare: string; targetSquare: string | null }) => {
-          if (!targetSquare) return false
-          const played = `${sourceSquare}${targetSquare}`
-          const correct = puzzle.best_move_uci.startsWith(played)
-          setFeedback(correct ? `Correct — ${puzzle.best_move_san}` : `Not quite. The best move was ${puzzle.best_move_san}.`)
-          return false
-        },
+        onPieceDrop: ({ sourceSquare, targetSquare }) => tryMove(sourceSquare, targetSquare),
+        onSquareClick: clickToMove.onSquareClick(true, tryMove),
+        squareStyles: clickToMove.squareStyles(true),
       }} />
     </div>
     <div className="practice-info">
