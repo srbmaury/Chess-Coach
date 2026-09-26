@@ -12,6 +12,14 @@ nothing in production: every step below is an explicit action.
   - `sb_secret_…`: server only. Never paste it into client code, logs, issues, or
     `render.yaml`.
 
+- **Auth → URL Configuration**:
+  - Set **Site URL** to the public app URL (for example
+    `https://chess-ml-coach.onrender.com`). Otherwise magic links point at Supabase's
+    default `http://localhost:3000`.
+  - Add the same origin under **Redirect URLs**, plus `http://127.0.0.1:8000` for local
+    testing. The app asks Supabase to return users to the page they signed in from, and
+    Supabase only honours listed URLs.
+
 ## 1. Database migrations
 
 ```bash
