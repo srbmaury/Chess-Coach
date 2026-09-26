@@ -37,13 +37,16 @@ class FakeDatabase:
 def test_discover_migrations_returns_sorted_versions():
     migrations = discover_migrations()
 
-    assert tuple(item.version for item in migrations) == ("0001_hosted_schema",)
+    assert tuple(item.version for item in migrations) == (
+        "0001_hosted_schema",
+        "0002_browser_analysis",
+    )
 
 
 def test_apply_migrations_is_idempotent():
     database = FakeDatabase()
 
-    assert apply_migrations(database) == ("0001_hosted_schema",)
+    assert apply_migrations(database) == ("0001_hosted_schema", "0002_browser_analysis")
     first_execution_count = len(database.connection.executed)
 
     assert apply_migrations(database) == ()
