@@ -37,7 +37,10 @@ beforeEach(() => {
 test('normalizes the email sent in a magic-link request', async () => {
   await requestMagicLink('  Player@Example.COM  ')
 
-  expect(mocks.client.auth.signInWithOtp).toHaveBeenCalledWith({ email: 'player@example.com' })
+  expect(mocks.client.auth.signInWithOtp).toHaveBeenCalledWith({
+    email: 'player@example.com',
+    options: { emailRedirectTo: window.location.origin },
+  })
 })
 
 test('recovers the current session then observes changes until unsubscribed', async () => {

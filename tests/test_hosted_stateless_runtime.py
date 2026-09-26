@@ -113,7 +113,7 @@ def _render_env() -> dict[str, dict[str, str]]:
     return env
 
 
-def test_committed_render_config_keeps_browser_analysis_disabled():
+def test_committed_render_config_enables_nothing_and_holds_no_secrets():
     env = _render_env()
     flag = env.get("CHESS_COACH_HOSTED_BROWSER_ANALYSIS_ENABLED", {"value": '"false"'})
     assert flag.get("value", '"false"').strip('"') == "false"

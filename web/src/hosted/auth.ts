@@ -12,7 +12,12 @@ export async function requestMagicLink(email: string): Promise<void> {
   const normalizedEmail = email.trim().toLowerCase()
   if (!normalizedEmail) throw new Error('Enter an email address')
   try {
-    const { error } = await (await client()).auth.signInWithOtp({ email: normalizedEmail })
+    // Send the link back to this site; Supabase otherwise falls back to its Site URL.
+    // The origin must be listed under Auth -> URL Configuration -> Redirect URLs.
+    const { error } = await (await client()).auth.signInWithOtp({
+      email: normalizedEmail,
+      options: { emailRedirectTo: window.location.origin },
+    })
     if (error) throw error
   } catch {
     throw new Error('Unable to send sign-in link')
