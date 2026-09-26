@@ -9,8 +9,10 @@ function randomId(): string {
   return `dev-${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
-export function deviceId(storage: Pick<Storage, 'getItem' | 'setItem'> | null = globalThis.localStorage ?? null): string {
+export function deviceId(provided?: Pick<Storage, 'getItem' | 'setItem'> | null): string {
   try {
+    // Reading localStorage itself can throw (blocked storage), so stay inside the guard.
+    const storage = provided === undefined ? globalThis.localStorage ?? null : provided
     const existing = storage?.getItem(DEVICE_KEY)
     if (existing && /^[A-Za-z0-9_-]{16,64}$/.test(existing)) return existing
     const created = randomId()
