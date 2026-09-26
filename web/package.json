@@ -10,6 +10,7 @@
     "test:run": "vitest --run"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.117.1",
     "chess.js": "1.4.0",
     "react": "19.3.0",
     "react-chessboard": "5.12.1",
