@@ -134,18 +134,10 @@ class InMemoryStorage:
 
 # API harness ---------------------------------------------------------------------------
 
-JWT_SECRET = "test-secret-at-least-32-bytes-long-for-hs256"
-
-
 def jwt_for(account_id: str, email: str | None = None) -> str:
-    import time
+    from jwt_support import token
 
-    import jwt
-
-    now = int(time.time())
-    claims = {"sub": account_id, "email": email or f"{account_id}@example.test",
-              "aud": "authenticated", "iat": now, "exp": now + 3600}
-    return jwt.encode(claims, JWT_SECRET, algorithm="HS256")
+    return token(account_id, email=email or f"{account_id}@example.test")
 
 
 def pgn_for(game_number: int, white: str, black: str, moves: str, date: str) -> str:
@@ -190,16 +182,16 @@ def chesscom_client(games: list[str] | None = None):
 
 def hosted_app(pg, *, storage=None, enabled: bool = True, games: list[str] | None = None,
                rate_limiter=None):
+    from jwt_support import verifier
+
     from chess_ml_coach.config import Settings
     from chess_ml_coach.hosted.accounts import PostgresAccountRepository
-    from chess_ml_coach.hosted.identity import SupabaseJwtVerifier
     from chess_ml_coach.web.app import create_app
     from chess_ml_coach.web.hosted_analysis_routes import build_hosted_analysis
 
     settings = Settings(
         persistence_mode="hosted",
         database_url="postgresql://unused.invalid/db",
-        supabase_jwt_secret=JWT_SECRET,
         supabase_url="https://project.supabase.co",
         supabase_publishable_key="sb_publishable_test",
         supabase_secret_key="sb_secret_server_only_value",
@@ -211,7 +203,7 @@ def hosted_app(pg, *, storage=None, enabled: bool = True, games: list[str] | Non
     )
     app = create_app(
         settings,
-        jwt_verifier=SupabaseJwtVerifier.from_settings(settings),
+        jwt_verifier=verifier(settings),
         account_repository=PostgresAccountRepository(pg),
         hosted_analysis=services,
     )

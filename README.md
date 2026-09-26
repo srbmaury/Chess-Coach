@@ -432,16 +432,18 @@ are introduced in a later phase.
 ### Hosted authentication
 
 Authenticated hosted endpoints live under `/api/hosted/` and require a Supabase
-session token. Configure the project's JWT secret alongside `DATABASE_URL`:
+session token. Only the project URL is needed:
 
 ```bash
-export SUPABASE_JWT_SECRET='your-project-jwt-secret'
+export SUPABASE_URL='https://<project-ref>.supabase.co'
 ```
 
-This assumes the Supabase project uses the legacy shared HS256 JWT secret
-(Dashboard -> Authentication -> JWT Keys). A project on the newer
-asymmetric-only signing keys is not yet supported and needs a JWKS-based
-verifier instead.
+The server verifies each token against the project's published signing keys
+(`$SUPABASE_URL/auth/v1/.well-known/jwks.json`, cached and refreshed on key
+rotation). It accepts only asymmetric ES256/RS256 signatures, and requires the
+`authenticated` audience, the project's `/auth/v1` issuer, an expiry, and a subject.
+Shared-secret (HS256) and unsigned tokens are rejected. No JWT secret is configured
+anywhere.
 
 Smoke-test with a real session token:
 
@@ -450,10 +452,8 @@ curl -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
   http://127.0.0.1:8000/api/hosted/account/me
 ```
 
-An unset or invalid token returns `401`; a deployment without
-`SUPABASE_JWT_SECRET` configured returns `503`. No hosted product route
-depends on this endpoint yet — profile claiming and entitlements are
-introduced in the next phase.
+A missing or invalid token returns `401`. A hosted deployment without `SUPABASE_URL`
+returns `503` from authenticated routes.
 
 ### Hosted browser analysis
 

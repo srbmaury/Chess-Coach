@@ -49,7 +49,6 @@ class Settings:
     thresholds: MoveQualityThresholds = field(default_factory=MoveQualityThresholds)
     persistence_mode: PersistenceMode = "local"
     database_url: str | None = None
-    supabase_jwt_secret: str | None = None
     supabase_jwt_audience: str = "authenticated"
     supabase_url: str | None = None
     supabase_publishable_key: str | None = None
@@ -124,7 +123,6 @@ def get_settings(
     blunder_cpl: int | None = None,
     persistence_mode: PersistenceMode | None = None,
     database_url: str | None = None,
-    supabase_jwt_secret: str | None = None,
     supabase_jwt_audience: str | None = None,
     supabase_url: str | None = None,
     supabase_publishable_key: str | None = None,
@@ -173,11 +171,6 @@ def get_settings(
         ),
         database_url=(
             database_url if database_url is not None else os.getenv("DATABASE_URL") or None
-        ),
-        supabase_jwt_secret=(
-            supabase_jwt_secret
-            if supabase_jwt_secret is not None
-            else os.getenv("SUPABASE_JWT_SECRET") or None
         ),
         supabase_jwt_audience=(
             supabase_jwt_audience
