@@ -54,8 +54,17 @@ class Settings:
     supabase_url: str | None = None
     supabase_publishable_key: str | None = None
     hosted_browser_analysis_enabled: bool = False
+    # Server-only Storage credential; never serialized to browsers or logs.
+    supabase_secret_key: str | None = field(default=None, repr=False)
+    supabase_storage_bucket: str = "analysis-artifacts"
+    hosted_analysis_depth: int = 12
+    hosted_max_games: int = 5000
 
     def __post_init__(self) -> None:
+        if not 1 <= self.hosted_analysis_depth <= 30:
+            raise ValueError("Hosted analysis depth must be between 1 and 30")
+        if self.hosted_max_games < 1:
+            raise ValueError("Hosted max games must be positive")
         if self.persistence_mode == "hosted" and not self.database_url:
             raise ValueError("DATABASE_URL is required in hosted persistence mode")
         if self.is_hosted and self.supabase_url:
@@ -120,6 +129,7 @@ def get_settings(
     supabase_url: str | None = None,
     supabase_publishable_key: str | None = None,
     hosted_browser_analysis_enabled: bool | None = None,
+    supabase_secret_key: str | None = None,
 ) -> Settings:
     thresholds = MoveQualityThresholds(
         inaccuracy=(
@@ -187,4 +197,12 @@ def get_settings(
             if hosted_browser_analysis_enabled is not None
             else _env_flag("CHESS_COACH_HOSTED_BROWSER_ANALYSIS_ENABLED")
         ),
+        supabase_secret_key=(
+            supabase_secret_key
+            if supabase_secret_key is not None
+            else os.getenv("SUPABASE_SECRET_KEY") or None
+        ),
+        supabase_storage_bucket=os.getenv("SUPABASE_STORAGE_BUCKET", "analysis-artifacts"),
+        hosted_analysis_depth=int(os.getenv("CHESS_COACH_HOSTED_ANALYSIS_DEPTH", "12")),
+        hosted_max_games=int(os.getenv("CHESS_COACH_HOSTED_MAX_GAMES", "5000")),
     )
