@@ -202,7 +202,7 @@ def _recurring_contexts(
         )
     return (
         pd.DataFrame(rows)
-        .sort_values("_score", ascending=False)
+        .sort_values("_score", ascending=False, kind="stable")
         .drop(columns=["_score"])
         .reset_index(drop=True)
     )
@@ -252,7 +252,10 @@ def _candidate_positions(
     rows: list[dict] = []
     per_game: dict[str, int] = {}
     mate_mask = _mate_mask(mistakes)
-    ranked = mistakes.assign(_mate_related=mate_mask).sort_values("cpl", ascending=False)
+    # A stable sort keeps equal losses in chronological order on every platform.
+    ranked = mistakes.assign(_mate_related=mate_mask).sort_values(
+        "cpl", ascending=False, kind="stable"
+    )
     for _, row in ranked.iterrows():
         game_id = str(row["game_id"])
         if per_game.get(game_id, 0) >= max_per_game:

@@ -11,6 +11,23 @@ class HealthResponse(BaseModel):
     username: str
     data_dir: str
     model_dir: str
+    persistence_mode: str
+    database_ready: bool | None
+
+
+class HostedBrowserConfig(BaseModel):
+    hosted: bool
+    supabase_url: str | None = None
+    supabase_publishable_key: str | None = None
+    analysis_enabled: bool | None = None
+    engine_version: str | None = None
+    config_version: str | None = None
+    analysis_config_hash: str | None = None
+    lease_seconds: int | None = None
+    renew_interval_seconds: int | None = None
+    max_upload_bytes: int | None = None
+    max_decompressed_bytes: int | None = None
+    max_browser_cache_bytes: int | None = None
 
 
 class PracticePuzzle(BaseModel):

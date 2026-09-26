@@ -16,8 +16,25 @@ API = "https://api.chess.com/pub"
 ProgressCallback = Callable[[dict[str, object]], None]
 
 
+DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+
+
 class ChessComError(RuntimeError):
     pass
+
+
+class ChessComNotFoundError(ChessComError):
+    pass
+
+
+class ChessComResponseTooLargeError(ChessComError):
+    pass
+
+
+@dataclass(frozen=True)
+class ChessComPlayer:
+    player_id: int | None
+    username: str
 
 
 @dataclass(frozen=True)
@@ -30,25 +47,62 @@ class SyncResult:
 
 
 class ChessComClient:
-    def __init__(self, http: httpx.Client | None = None, retries: int = 3):
+    def __init__(
+        self,
+        http: httpx.Client | None = None,
+        retries: int = 3,
+        *,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self.http = http or httpx.Client(
             timeout=30,
             headers={"User-Agent": "chess-ml-coach/0.1"},
         )
         self.retries = retries
+        self.max_response_bytes = max_response_bytes
+        self._sleep = sleep
+
+    def _bounded_body(self, response: httpx.Response, url: str) -> bytes:
+        declared = response.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > self.max_response_bytes:
+            raise ChessComResponseTooLargeError(f"Chess.com response too large: {url}")
+        body = bytearray()
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if len(body) > self.max_response_bytes:
+                raise ChessComResponseTooLargeError(f"Chess.com response too large: {url}")
+        return bytes(body)
 
     def _json(self, url: str, *, allow_unavailable: bool = False) -> dict | None:
         for attempt in range(self.retries + 1):
-            response = self.http.get(url)
-            if response.status_code < 400:
-                return response.json()
-            if allow_unavailable and response.status_code in {404, 410}:
+            with self.http.stream("GET", url) as response:
+                if response.status_code < 400:
+                    try:
+                        return json.loads(self._bounded_body(response, url))
+                    except ValueError as exc:
+                        raise ChessComError(f"Chess.com returned invalid JSON: {url}") from exc
+                status = response.status_code
+            if allow_unavailable and status in {404, 410}:
                 return None
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < self.retries:
-                time.sleep(2**attempt)
+            if status in {429, 500, 502, 503, 504} and attempt < self.retries:
+                self._sleep(2**attempt)
                 continue
-            raise ChessComError(f"Chess.com request failed: {response.status_code} {url}")
+            if status in {404, 410}:
+                raise ChessComNotFoundError(f"Chess.com resource not found: {url}")
+            raise ChessComError(f"Chess.com request failed: {status} {url}")
         raise AssertionError("unreachable")
+
+    def player_profile(self, username: str) -> ChessComPlayer:
+        data = self._json(f"{API}/player/{username}")
+        if not isinstance(data, dict):
+            raise ChessComError("Chess.com returned an invalid player profile")
+        player_id = data.get("player_id")
+        name = data.get("username") or username
+        return ChessComPlayer(
+            player_id=int(player_id) if isinstance(player_id, int) else None,
+            username=str(name),
+        )
 
     def archive_urls(self, username: str) -> list[str]:
         data = self._json(f"{API}/player/{username}/games/archives")

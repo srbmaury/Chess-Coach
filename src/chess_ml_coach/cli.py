@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, TypeVar
@@ -10,6 +11,8 @@ import typer
 from . import services
 from .config import Settings
 from .config import get_settings as _get_root_settings
+from .hosted.database import Database
+from .hosted.migrations import apply_migrations
 from .profiles import ProfileManager, canonicalize_username
 
 app = typer.Typer(no_args_is_help=True)
@@ -25,6 +28,8 @@ _run_report = services.run_report
 _run_puzzles = services.run_puzzles
 _training_db_path = services.training_db_path
 _answer_to_uci = services.answer_to_uci
+_database_factory = Database.from_settings
+_apply_migrations = apply_migrations
 
 
 def _resolve_profile_settings(username: str | None, **kwargs) -> Settings:
@@ -168,6 +173,37 @@ def _print_progress_rows(title: str, rows) -> None:
             f"  {row.label}: {row.puzzles} puzzles • {row.attempts} reviews • "
             f"{_accuracy_text(row.accuracy)} accuracy"
         )
+
+
+@app.command("db-migrate")
+def db_migrate(
+    database_url: Annotated[str | None, typer.Option("--database-url")] = None,
+) -> None:
+    """Apply pending hosted PostgreSQL migrations."""
+    resolved_url = database_url or os.getenv("DATABASE_URL")
+    if not resolved_url:
+        typer.echo("DATABASE_URL is required for db-migrate")
+        raise typer.Exit(code=1)
+    database = None
+    try:
+        hosted = _get_root_settings(
+            None,
+            persistence_mode="hosted",
+            database_url=resolved_url,
+        )
+        database = _database_factory(hosted)
+        try:
+            database.open()
+            applied = _apply_migrations(database)
+        finally:
+            database.close()
+    except Exception:  # noqa: BLE001 - never expose database connection details to the CLI.
+        typer.echo("Database migration failed", err=True)
+        raise typer.Exit(code=1) from None
+    if applied:
+        typer.echo(f"Applied migrations: {', '.join(applied)}")
+    else:
+        typer.echo("Database schema is already current")
 
 
 @app.command()
@@ -360,15 +396,43 @@ def ui(
 
     import uvicorn
 
+    from .hosted.accounts import PostgresAccountRepository
+    from .hosted.database import Database
+    from .hosted.identity import AuthConfigurationError, SupabaseJwtVerifier
+    from .web.hosted_analysis_routes import build_hosted_analysis
     from .web.serve import create_served_app
 
     # UI starts from root storage so a fresh community clone can choose a player.
     root = _execute(
         lambda: _get_root_settings(None, data_dir=data_dir, model_dir=model_dir)
     )
-    web_app = _execute(
-        lambda: create_served_app(root, initial_username=username)
-    )
+
+    def _build_app():
+        database = Database.from_settings(root) if root.is_hosted else None
+        jwt_verifier = None
+        account_repository = None
+        hosted_analysis = None
+        if database is not None:
+            try:
+                jwt_verifier = SupabaseJwtVerifier.from_settings(root)
+            except AuthConfigurationError:
+                # Hosted DB may go live before SUPABASE_JWT_SECRET is configured;
+                # /api/hosted/* routes report 503 until it is set, rather than
+                # refusing to start the whole service.
+                jwt_verifier = None
+            account_repository = PostgresAccountRepository(database)
+            # Without SUPABASE_SECRET_KEY the analysis routes answer 503.
+            hosted_analysis = build_hosted_analysis(root, database)
+        return create_served_app(
+            root,
+            initial_username=username,
+            database=database,
+            jwt_verifier=jwt_verifier,
+            account_repository=account_repository,
+            hosted_analysis=hosted_analysis,
+        )
+
+    web_app = _execute(_build_app)
     url = f"http://{host}:{port}"
     typer.echo(f"Chess ML Coach UI -> {url}")
     if open_browser:
