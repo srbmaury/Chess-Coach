@@ -25,6 +25,7 @@ from ..training import TrainingStore
 from .adaptive_routes import AdaptiveServiceRegistry
 from .adaptive_routes import router as adaptive_router
 from .explanation_routes import router as explanation_router
+from .hosted_analysis_routes import HostedAnalysisServices, install_hosted_analysis
 from .hosted_routes import router as hosted_router
 from .pipeline import (
     TERMINAL_STATUSES,
@@ -169,6 +170,7 @@ def create_app(
     database: Database | None = None,
     jwt_verifier: SupabaseJwtVerifier | None = None,
     account_repository: AccountRepository | None = None,
+    hosted_analysis: HostedAnalysisServices | None = None,
 ) -> FastAPI:
     initial = settings or Settings()
     manager = pipeline_manager or PipelineManager(initial)
@@ -202,6 +204,7 @@ def create_app(
     app.include_router(explanation_router)
     app.include_router(adaptive_router)
     app.include_router(hosted_router)
+    install_hosted_analysis(app, hosted_analysis)
 
     def current() -> Settings:
         return app.state.settings

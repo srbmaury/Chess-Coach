@@ -399,6 +399,7 @@ def ui(
     from .hosted.accounts import PostgresAccountRepository
     from .hosted.database import Database
     from .hosted.identity import AuthConfigurationError, SupabaseJwtVerifier
+    from .web.hosted_analysis_routes import build_hosted_analysis
     from .web.serve import create_served_app
 
     # UI starts from root storage so a fresh community clone can choose a player.
@@ -410,6 +411,7 @@ def ui(
         database = Database.from_settings(root) if root.is_hosted else None
         jwt_verifier = None
         account_repository = None
+        hosted_analysis = None
         if database is not None:
             try:
                 jwt_verifier = SupabaseJwtVerifier.from_settings(root)
@@ -419,12 +421,15 @@ def ui(
                 # refusing to start the whole service.
                 jwt_verifier = None
             account_repository = PostgresAccountRepository(database)
+            # Without SUPABASE_SECRET_KEY the analysis routes answer 503.
+            hosted_analysis = build_hosted_analysis(root, database)
         return create_served_app(
             root,
             initial_username=username,
             database=database,
             jwt_verifier=jwt_verifier,
             account_repository=account_repository,
+            hosted_analysis=hosted_analysis,
         )
 
     web_app = _execute(_build_app)

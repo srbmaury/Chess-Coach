@@ -13,6 +13,7 @@ from ..hosted.accounts import AccountRepository
 from ..hosted.database import Database
 from ..hosted.identity import SupabaseJwtVerifier
 from .app import create_app
+from .hosted_analysis_routes import HostedAnalysisServices
 from .profile_routes import enable_profiles
 
 _BUILD_INPUTS = (
@@ -67,6 +68,7 @@ def create_served_app(
     database: Database | None = None,
     jwt_verifier: SupabaseJwtVerifier | None = None,
     account_repository: AccountRepository | None = None,
+    hosted_analysis: HostedAnalysisServices | None = None,
 ):
     dist = Path(static_dir) if static_dir is not None else default_frontend_dist()
     index_path = dist / "index.html"
@@ -87,6 +89,7 @@ def create_served_app(
         database=database,
         jwt_verifier=jwt_verifier,
         account_repository=account_repository,
+        hosted_analysis=hosted_analysis,
     )
     enable_profiles(app, resolved, initial_username=initial_username)
     assets = dist / "assets"
