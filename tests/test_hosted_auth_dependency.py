@@ -1,14 +1,9 @@
-import time
-
-import jwt
 from fastapi.testclient import TestClient
+from jwt_support import SUPABASE_URL, token, verifier
 
 from chess_ml_coach.config import Settings
 from chess_ml_coach.hosted.accounts import Account
-from chess_ml_coach.hosted.identity import SupabaseJwtVerifier
 from chess_ml_coach.web.app import create_app
-
-SECRET = "test-secret-at-least-32-bytes-long-for-hs256"
 
 
 class FakeAccountRepository:
@@ -24,12 +19,7 @@ class FakeAccountRepository:
 
 
 def _token(subject: str = "11111111-1111-1111-1111-111111111111", **overrides) -> str:
-    now = int(time.time())
-    claims = {
-        "sub": subject, "email": "player@example.com", "aud": "authenticated",
-        "exp": now + 3600, "iat": now, **overrides,
-    }
-    return jwt.encode(claims, SECRET, algorithm="HS256")
+    return token(subject, **overrides)
 
 
 def _authed_app(tmp_path):
@@ -38,12 +28,12 @@ def _authed_app(tmp_path):
         model_dir=tmp_path / "models",
         persistence_mode="hosted",
         database_url="postgresql://example.invalid/chess",
-        supabase_jwt_secret=SECRET,
+        supabase_url=SUPABASE_URL,
     )
     repository = FakeAccountRepository()
     app = create_app(
         settings,
-        jwt_verifier=SupabaseJwtVerifier.from_settings(settings),
+        jwt_verifier=verifier(settings),
         account_repository=repository,
     )
     return app, repository

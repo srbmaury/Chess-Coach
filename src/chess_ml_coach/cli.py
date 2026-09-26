@@ -416,7 +416,7 @@ def ui(
             try:
                 jwt_verifier = SupabaseJwtVerifier.from_settings(root)
             except AuthConfigurationError:
-                # Hosted DB may go live before SUPABASE_JWT_SECRET is configured;
+                # Hosted DB may go live before SUPABASE_URL is configured;
                 # /api/hosted/* routes report 503 until it is set, rather than
                 # refusing to start the whole service.
                 jwt_verifier = None

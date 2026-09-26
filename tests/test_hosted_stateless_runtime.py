@@ -117,7 +117,7 @@ def test_committed_render_config_enables_nothing_and_holds_no_secrets():
     env = _render_env()
     flag = env.get("CHESS_COACH_HOSTED_BROWSER_ANALYSIS_ENABLED", {"value": '"false"'})
     assert flag.get("value", '"false"').strip('"') == "false"
-    for secret in ("SUPABASE_SECRET_KEY", "DATABASE_URL", "SUPABASE_JWT_SECRET"):
+    for secret in ("SUPABASE_SECRET_KEY", "DATABASE_URL"):
         assert "value" not in env.get(secret, {}), f"{secret} must not be committed"
 
 

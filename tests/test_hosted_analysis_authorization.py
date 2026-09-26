@@ -37,11 +37,9 @@ def test_missing_or_invalid_tokens_are_rejected(api, header):
 def test_expired_token_is_rejected(api):
     import time
 
-    import jwt
-    from hosted_factories import JWT_SECRET
+    from jwt_support import token
 
-    expired = jwt.encode({"sub": api["owner"].account_id, "aud": "authenticated",
-                          "exp": int(time.time()) - 10}, JWT_SECRET, algorithm="HS256")
+    expired = token(api["owner"].account_id, exp=int(time.time()) - 10)
     response = TestClient(api["app"]).get(
         "/api/hosted/profiles", headers={"Authorization": f"Bearer {expired}"}
     )

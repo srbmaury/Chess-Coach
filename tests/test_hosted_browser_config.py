@@ -17,7 +17,7 @@ def test_hosted_browser_config_is_public_and_exposes_only_browser_values():
     settings = Settings(
         persistence_mode="hosted",
         database_url="postgresql://private-user:private-password@example.invalid/chess",
-        supabase_jwt_secret="private-jwt-secret",
+        supabase_secret_key="sb_secret_private-server-key",
         supabase_url="https://public-project.supabase.co",
         supabase_publishable_key="sb_publishable_public",
         hosted_browser_analysis_enabled=True,
@@ -42,7 +42,7 @@ def test_hosted_browser_config_is_public_and_exposes_only_browser_values():
     }
     body = response.text.lower()
     assert "private-password" not in body
-    assert "private-jwt-secret" not in body
+    assert "private-server-key" not in body
     assert "service_role" not in body
 
 

@@ -6,7 +6,8 @@ nothing in production: every step below is an explicit action.
 ## 0. Prerequisites
 
 - A Supabase project with Auth (magic links), Postgres, Storage, and Realtime.
-- The project uses the legacy HS256 JWT secret (see README, *Hosted authentication*).
+- Session tokens are verified with the project's published ES256/RS256 signing keys
+  (see README, *Hosted authentication*). No JWT secret is needed.
 - API keys from **Settings → API Keys**:
   - `sb_publishable_…`: safe for browsers.
   - `sb_secret_…`: server only. Never paste it into client code, logs, issues, or
@@ -93,7 +94,6 @@ Set these in the Render dashboard (never in `render.yaml`):
 | --- | --- |
 | `CHESS_COACH_PERSISTENCE_MODE` | `hosted` |
 | `DATABASE_URL` | Supabase Postgres connection string |
-| `SUPABASE_JWT_SECRET` | legacy JWT secret |
 | `SUPABASE_URL` | `https://<project>.supabase.co` |
 | `SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_…` |
 | `SUPABASE_SECRET_KEY` | `sb_secret_…` |
