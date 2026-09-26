@@ -10,7 +10,7 @@ import { canonicalJson, sha256Hex } from '../analysis/hash'
 import { ARTIFACT_TYPES, type DeriveInput, type DerivedArtifacts } from '../analysis/pipeline'
 import { ENGINE_BUILD } from '../engine/protocol'
 import { downloadSigned, HostedApiError, putSigned, type HostedApi } from './api'
-import { StorageQuotaError, type BatchRecord, type CheckpointStore } from './checkpointStore'
+import { isAnalysisRow, StorageQuotaError, type BatchRecord, type CheckpointStore } from './checkpointStore'
 import { gunzip, gunzipJson, gzipJson } from './encoding'
 import type { JobView, LeaseResponse, ManifestResponse } from './types'
 
@@ -97,11 +97,13 @@ export class AnalysisCoordinator {
   private computeAllowed: boolean
   private readonly now: () => number
   private readonly environment: CoordinatorEnvironment
+  private readonly locks: LockManagerLike | null
 
   constructor(private readonly deps: CoordinatorDeps) {
     this.computeAllowed = deps.computeAllowed
     this.now = deps.now ?? (() => Date.now())
     this.environment = deps.environment ?? browserEnvironment()
+    this.locks = deps.locks === undefined ? (globalThis.navigator?.locks as LockManagerLike | undefined) ?? null : deps.locks
   }
 
   get current(): CoordinatorSnapshot {
@@ -131,6 +133,7 @@ export class AnalysisCoordinator {
   // Lifecycle -----------------------------------------------------------------------------
 
   async start(jobId: string): Promise<void> {
+    if (this.jobId === jobId && (this.lease || this.claiming)) return
     if (this.jobId && this.jobId !== jobId) {
       const previousJob = this.jobId
       const previousLease = this.lease
@@ -160,25 +163,29 @@ export class AnalysisCoordinator {
 
   async setComputeAllowed(allowed: boolean): Promise<void> {
     this.computeAllowed = allowed
-    if (!this.jobId) return
+    const jobId = this.jobId
+    if (!jobId) return
     const lease = this.lease
-    if (!allowed && lease) {
+    if (!allowed) {
       this.abandonRun('observing', null)
-      void this.deps.api.release(this.jobId, { device_id: this.deps.deviceId, lease_token: lease.token }).catch(() => undefined)
+      if (lease) void this.deps.api.release(jobId, { device_id: this.deps.deviceId, lease_token: lease.token }).catch(() => undefined)
     }
-    const job = await this.deps.api.setCompute(this.jobId, allowed)
+    const generation = this.generation
+    const job = await this.deps.api.setCompute(jobId, allowed)
+    if (generation !== this.generation || jobId !== this.jobId || this.computeAllowed !== allowed) return
     this.emit({ job })
-    void this.refresh(this.generation)
+    void this.refresh(generation)
   }
 
   async stopObserving(): Promise<void> {
     const jobId = this.jobId
     const lease = this.lease
-    this.abandonRun('stopped', null)
+    const generation = this.abandonRun('stopped', null)
     this.clearPoll()
     if (jobId) {
       if (lease) await this.deps.api.release(jobId, { device_id: this.deps.deviceId, lease_token: lease.token }).catch(() => undefined)
       const job = await this.deps.api.stop(jobId)
+      if (generation !== this.generation || jobId !== this.jobId) return
       this.emit({ job, state: 'stopped' })
     }
   }
@@ -270,7 +277,7 @@ export class AnalysisCoordinator {
   }
 
   private acquireLock(jobId: string): Promise<boolean> {
-    const locks = this.deps.locks
+    const locks = this.locks
     if (!locks) return Promise.resolve(true)
     return new Promise((resolve) => {
       void locks.request(`chess-coach-analysis-${jobId}`, { ifAvailable: true }, (lock) => {
@@ -311,7 +318,7 @@ export class AnalysisCoordinator {
         this.emit({ state: 'observing', message: busy ? 'Another browser is analyzing' : (error as Error).message })
         return
       }
-      if (generation !== this.generation) {
+      if (generation !== this.generation || !this.computeAllowed) {
         await this.deps.api.release(jobId, { device_id: this.deps.deviceId, lease_token: grant.lease_token }).catch(() => undefined)
         this.releaseLock?.()
         this.releaseLock = null
@@ -425,12 +432,22 @@ export class AnalysisCoordinator {
         job: this.snapshot.job && { ...this.snapshot.job, completed_units: completed, checkpoint_sequence: sequence, worker_active: true },
       })
       await this.deps.store.discardBefore(jobId, sequence, completed)
+      this.check(generation)
 
       const pending = await this.deps.store.pendingBatch(jobId, sequence + 1, completed)
+      this.check(generation)
       if (pending) {
-        await this.commitBatch(generation, jobId, pending)
-        completed = pending.lastUnit + 1
-        sequence = pending.sequence
+        if (await this.validPendingBatch(pending, manifest, games)) {
+          this.check(generation)
+          await this.commitBatch(generation, jobId, pending)
+          this.check(generation)
+          completed = pending.lastUnit + 1
+          sequence = pending.sequence
+        } else {
+          this.check(generation)
+          await this.deps.store.discardBatch(jobId, pending.sequence)
+          this.check(generation)
+        }
       }
       const batchGames = this.deps.checkpointGames ?? 10
       while (completed < games.length) {
@@ -440,10 +457,12 @@ export class AnalysisCoordinator {
         for (let unit = completed; unit <= last; unit += 1) {
           const game = games[unit]
           let rows = await this.deps.store.gameRows(jobId, unit, game.game_id)
+          this.check(generation)
           if (!rows) {
             rows = await analyzeGame(game, engine, { multipv: config.brilliant_multipv })
             this.check(generation)
             await this.deps.store.saveGameRows(jobId, unit, game.game_id, rows)
+            this.check(generation)
           }
           analyzed.push({ game_id: game.game_id, rows })
           this.emit({ localUnits: unit - completed + 1, state: 'running', message: null })
@@ -462,10 +481,13 @@ export class AnalysisCoordinator {
         const batch = { jobId, sequence: sequence + 1, firstUnit: completed, lastUnit: last, contentHash: await sha256Hex(bytes), bytes }
         this.check(generation)
         await this.deps.store.saveBatch(batch)
+        this.check(generation)
         await this.commitBatch(generation, jobId, { version: 1, ...batch })
+        this.check(generation)
         completed = last + 1
         sequence += 1
       }
+      this.check(generation)
       await this.deriveAndComplete(generation, jobId, manifest, games)
     } catch (error) {
       await this.handleRunError(generation, jobId, error)
@@ -482,21 +504,50 @@ export class AnalysisCoordinator {
   }
 
   private async loadGames(jobId: string, manifest: ManifestResponse): Promise<ManifestGame[]> {
-    let compressed = await this.deps.store.manifest(jobId, manifest.manifest_hash)
-    if (!compressed) {
-      compressed = await (this.deps.downloadSigned ?? downloadSigned)(manifest.download_url, MANIFEST_MAX_BYTES)
+    const decode = async (compressed: Uint8Array): Promise<ManifestGame[]> => {
+      const body = await gunzip(compressed, MANIFEST_MAX_BYTES)
+      if (await sha256Hex(body) !== manifest.manifest_hash) throw new Error('The game list failed its integrity check')
+      const document = JSON.parse(new TextDecoder().decode(body)) as unknown
+      if (!document || typeof document !== 'object' || !('games' in document)
+        || !Array.isArray(document.games) || document.games.length !== manifest.total_units) {
+        throw new Error('The game list does not match this analysis')
+      }
+      return document.games as ManifestGame[]
     }
-    const body = await gunzip(compressed, MANIFEST_MAX_BYTES)
-    if (await sha256Hex(body) !== manifest.manifest_hash) {
-      throw new Error('The game list failed its integrity check')
+    const cached = await this.deps.store.manifest(jobId, manifest.manifest_hash)
+    if (cached) {
+      try { return await decode(cached) } catch {
+        await this.deps.store.discardManifest(jobId, manifest.manifest_hash)
+      }
     }
+    const compressed = await (this.deps.downloadSigned ?? downloadSigned)(manifest.download_url, MANIFEST_MAX_BYTES)
+    const games = await decode(compressed)
     await this.deps.store.cacheManifest(jobId, manifest.manifest_hash, compressed)
-    const document = JSON.parse(new TextDecoder().decode(body)) as { games: ManifestGame[] }
-    if (document.games.length !== manifest.total_units) throw new Error('The game list does not match this analysis')
-    return document.games
+    return games
+  }
+
+  private async validPendingBatch(batch: BatchRecord, manifest: ManifestResponse, games: ManifestGame[]): Promise<boolean> {
+    try {
+      const payload = await gunzipJson<unknown>(batch.bytes, this.deps.limits.maxDecompressedBytes)
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
+      const item = payload as Record<string, unknown>
+      if (item.schema_version !== 1 || item.job_id !== batch.jobId || item.sequence !== batch.sequence
+        || item.analysis_config_hash !== manifest.analysis_config_hash || item.engine_build_hash !== manifest.engine_build_hash
+        || item.first_unit !== batch.firstUnit || item.last_unit !== batch.lastUnit
+        || !Array.isArray(item.games) || item.games.length !== batch.lastUnit - batch.firstUnit + 1) return false
+      return item.games.every((entry, index) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+        const game = entry as Record<string, unknown>
+        return game.game_id === games[batch.firstUnit + index]?.game_id
+          && Array.isArray(game.rows) && game.rows.every(isAnalysisRow)
+      })
+    } catch {
+      return false
+    }
   }
 
   private async commitBatch(generation: number, jobId: string, batch: BatchRecord): Promise<void> {
+    this.check(generation)
     this.emit({ state: 'uploading' })
     const upload = await this.deps.api.upload(jobId, {
       ...this.leaseBody(), kind: 'checkpoint', sequence: batch.sequence, byte_size: batch.bytes.byteLength,
@@ -510,6 +561,7 @@ export class AnalysisCoordinator {
     await this.deps.api.finalizeCheckpoint(jobId, { ...this.leaseBody(), sequence: batch.sequence, content_hash: batch.contentHash })
     this.check(generation)
     await this.deps.store.acknowledge(jobId, batch.sequence, batch.lastUnit)
+    this.check(generation)
     this.emit({
       state: 'running',
       localUnits: 0,
@@ -520,6 +572,7 @@ export class AnalysisCoordinator {
   }
 
   private async deriveAndComplete(generation: number, jobId: string, manifest: ManifestResponse, games: ManifestGame[]): Promise<void> {
+    this.check(generation)
     this.emit({ state: 'running', message: 'Building puzzles and your report' })
     const listing = await this.deps.api.checkpoints(jobId)
     this.check(generation)

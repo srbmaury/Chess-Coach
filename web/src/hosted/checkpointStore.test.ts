@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, expect, test, vi } from 'vitest'
 import { deleteDB, openDB } from 'idb'
 
+import { sha256Hex } from '../analysis/hash'
 import { CheckpointStore, DB_NAME, DB_VERSION, MAX_BROWSER_CACHE_BYTES, StorageQuotaError } from './checkpointStore'
 
 const MiB = 1024 * 1024
@@ -53,14 +54,16 @@ test('keeps only the canonical next batch and removes acknowledged batches and r
   const { opened } = await store()
   await opened.saveGameRows('job', 0, 'g0', [])
   await opened.saveGameRows('job', 1, 'g1', [])
-  await opened.saveBatch({ jobId: 'job', sequence: 1, firstUnit: 0, lastUnit: 0, contentHash: 'h1', bytes: new Uint8Array([1]) })
-  await opened.saveBatch({ jobId: 'job', sequence: 2, firstUnit: 1, lastUnit: 1, contentHash: 'h2', bytes: new Uint8Array([2]) })
-  expect((await opened.pendingBatch('job', 1, 0))?.contentHash).toBe('h1')
+  const hash1 = await sha256Hex(new Uint8Array([1]))
+  const hash2 = await sha256Hex(new Uint8Array([2]))
+  await opened.saveBatch({ jobId: 'job', sequence: 1, firstUnit: 0, lastUnit: 0, contentHash: hash1, bytes: new Uint8Array([1]) })
+  await opened.saveBatch({ jobId: 'job', sequence: 2, firstUnit: 1, lastUnit: 1, contentHash: hash2, bytes: new Uint8Array([2]) })
+  expect((await opened.pendingBatch('job', 1, 0))?.contentHash).toBe(hash1)
   await opened.acknowledge('job', 1, 0)
   expect(await opened.pendingBatch('job', 1, 0)).toBeNull()
   expect(await opened.gameRows('job', 0, 'g0')).toBeNull()
   expect(await opened.gameRows('job', 1, 'g1')).toEqual([])
-  expect((await opened.pendingBatch('job', 2, 1))?.contentHash).toBe('h2')
+  expect((await opened.pendingBatch('job', 2, 1))?.contentHash).toBe(hash2)
   expect(await opened.pendingBatch('job', 2, 0)).toBeNull()
 })
 
@@ -103,4 +106,26 @@ test('checks real navigator storage estimate before writing', async () => {
   const { opened } = await store()
   await expect(opened.cacheManifest('job', 'h', new Uint8Array(2))).rejects.toBeInstanceOf(StorageQuotaError)
   expect(estimate).toHaveBeenCalledOnce()
+})
+
+test('discards a cached batch when its bytes no longer match its content hash', async () => {
+  const { opened, name } = await store()
+  const good = new Uint8Array([1, 2, 3])
+  const contentHash = await sha256Hex(good)
+  await opened.saveBatch({ jobId: 'job', sequence: 1, firstUnit: 0, lastUnit: 0, contentHash, bytes: good })
+  const db = await openDB(name)
+  await db.put('batches', { version: 1, jobId: 'job', sequence: 1, firstUnit: 0, lastUnit: 0, contentHash, bytes: new Uint8Array([9]) })
+  db.close()
+  expect(await opened.pendingBatch('job', 1, 0)).toBeNull()
+  const inspect = await openDB(name)
+  expect(await inspect.get('batches', ['job', 1])).toBeUndefined()
+  inspect.close()
+})
+
+test('discards malformed saved analysis rows instead of returning them', async () => {
+  const { opened, name } = await store()
+  const db = await openDB(name)
+  await db.put('games', { version: 1, jobId: 'job', unit: 0, gameId: 'g', rows: [{ wrong: true }] })
+  db.close()
+  expect(await opened.gameRows('job', 0, 'g')).toBeNull()
 })

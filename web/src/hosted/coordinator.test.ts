@@ -64,18 +64,19 @@ async function fixture(options: { computeAllowed?: boolean; active?: boolean; se
   const search = options.search ?? deferred<EngineLine[]>().promise
   const engine: EngineHandle = { search: vi.fn(() => search), terminate: vi.fn() }
   const api = {
-    job: vi.fn(async () => job({ analysis_config_hash: analysisConfigHash, manifest_hash: manifestHash, worker_active: options.active ?? false })),
+    job: vi.fn(async (jobId: string) => job({ id: jobId, analysis_config_hash: analysisConfigHash, manifest_hash: manifestHash, worker_active: options.active ?? false })),
     claim: vi.fn(async () => options.grant ?? lease()), renew: vi.fn(async () => lease()),
     release: vi.fn(async () => undefined), stop: vi.fn(async () => job({ subscription_state: 'stopped' })),
     setCompute: vi.fn(async () => job()), manifest: vi.fn(async () => manifest),
     upload: vi.fn(), finalizeCheckpoint: vi.fn(), checkpoints: vi.fn(), finalizeArtifact: vi.fn(), complete: vi.fn(),
   }
   const putSigned = vi.fn(async () => undefined)
+  const downloadSigned = vi.fn(async () => manifestBytes)
   const coordinator = new AnalysisCoordinator({
     api: api as unknown as CoordinatorDeps['api'], store, createEngine: () => engine,
     derive: vi.fn(), deviceId: 'device', computeAllowed: options.computeAllowed ?? true,
     limits: { maxUploadBytes: 8 * 1024 * 1024, maxDecompressedBytes: 32 * 1024 * 1024 },
-    downloadSigned: vi.fn(async () => manifestBytes),
+    downloadSigned,
     putSigned,
     now: () => now,
     environment: {
@@ -88,7 +89,17 @@ async function fixture(options: { computeAllowed?: boolean; active?: boolean; se
       },
     },
   })
-  return { api, coordinator, engine, store, name, putSigned, fire, setNow: (value: number) => { now = value }, setOnline: (value: boolean) => { online = value }, setVisible: (value: boolean) => { visible = value } }
+  return { api, coordinator, engine, store, name, manifest, manifestBytes, putSigned, downloadSigned, fire, setNow: (value: number) => { now = value }, setOnline: (value: boolean) => { online = value }, setVisible: (value: boolean) => { visible = value } }
+}
+
+async function batchFor(manifest: ManifestResponse) {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    schema_version: 1, job_id: 'job', sequence: 1,
+    analysis_config_hash: manifest.analysis_config_hash,
+    engine_build_hash: manifest.engine_build_hash,
+    first_unit: 0, last_unit: 0, games: [{ game_id: 'g1', rows: [] }],
+  }))
+  return { jobId: 'job', sequence: 1, firstUnit: 0, lastUnit: 0, contentHash: await sha256Hex(bytes), bytes }
 }
 
 afterEach(async () => {
@@ -184,6 +195,87 @@ test('a claim completed after stopping is released without starting a worker', a
   coordinator.dispose()
 })
 
+test('compute opt-out invalidates and releases a claim that resolves later', async () => {
+  const { api, coordinator, engine } = await fixture()
+  const pending = deferred<LeaseResponse>()
+  api.claim.mockImplementationOnce(() => pending.promise)
+  await coordinator.start('job')
+  await vi.waitFor(() => expect(api.claim).toHaveBeenCalledOnce())
+  await coordinator.setComputeAllowed(false)
+  pending.resolve(lease())
+  await turn()
+  expect(coordinator.current.state).toBe('observing')
+  expect(engine.search).not.toHaveBeenCalled()
+  expect(api.release).toHaveBeenCalledWith('job', { device_id: 'device', lease_token: 'secret-lease-token' })
+  coordinator.dispose()
+})
+
+test('a delayed compute response cannot replace a newer job', async () => {
+  const { api, coordinator } = await fixture({ computeAllowed: false })
+  const pending = deferred<JobView>()
+  api.setCompute.mockImplementationOnce(() => pending.promise)
+  await coordinator.start('job')
+  const oldRequest = coordinator.setComputeAllowed(false)
+  await coordinator.start('new-job')
+  const seen: string[] = []
+  const unsubscribe = coordinator.subscribe((snapshot) => { if (snapshot.job) seen.push(snapshot.job.id) })
+  pending.resolve(job({ id: 'job', subscription_state: 'stopped' }))
+  await oldRequest
+  expect(coordinator.current.job?.id).toBe('new-job')
+  expect(coordinator.current.state).toBe('observing')
+  expect(seen).not.toContain('job')
+  unsubscribe()
+  coordinator.dispose()
+})
+
+test('a delayed stop response cannot overwrite a newer job', async () => {
+  const { api, coordinator } = await fixture({ computeAllowed: false })
+  const pending = deferred<JobView>()
+  api.stop.mockImplementationOnce(() => pending.promise)
+  await coordinator.start('job')
+  const oldStop = coordinator.stopObserving()
+  await coordinator.start('new-job')
+  pending.resolve(job({ id: 'job', subscription_state: 'stopped' }))
+  await oldStop
+  expect(coordinator.current.job?.id).toBe('new-job')
+  expect(coordinator.current.state).toBe('observing')
+  coordinator.dispose()
+})
+
+test('restarting the same job keeps its live lease and renewal', async () => {
+  const { api, coordinator, engine, fire, setNow } = await fixture()
+  await coordinator.start('job')
+  await vi.waitFor(() => expect(coordinator.current.state).toBe('running'))
+  await coordinator.start('job')
+  expect(coordinator.current.state).toBe('running')
+  expect(engine.terminate).not.toHaveBeenCalled()
+  setNow(20_000)
+  fire('visibilitychange')
+  await turn()
+  expect(api.renew).toHaveBeenCalledOnce()
+  coordinator.dispose()
+})
+
+test('navigator locks prevent a second tab with the same device ID from claiming', async () => {
+  let held = false
+  const request = vi.fn(async (_name: string, _options: unknown, callback: (lock: unknown) => Promise<void> | void) => {
+    if (held) return callback(null)
+    held = true
+    try { await callback({}) } finally { held = false }
+  })
+  vi.stubGlobal('navigator', { locks: { request } })
+  const first = await fixture()
+  const second = await fixture()
+  await first.coordinator.start('job')
+  await vi.waitFor(() => expect(first.coordinator.current.state).toBe('running'))
+  await second.coordinator.start('job')
+  await vi.waitFor(() => expect(second.coordinator.current.state).toBe('observing'))
+  expect(second.api.claim).not.toHaveBeenCalled()
+  expect(request).toHaveBeenCalledTimes(2)
+  first.coordinator.dispose()
+  second.coordinator.dispose()
+})
+
 test('IndexedDB contains analysis data without persisting the lease token', async () => {
   const { coordinator, name } = await fixture()
   await coordinator.start('job')
@@ -236,17 +328,73 @@ test('uploads and finalizes a checkpoint, then evicts its acknowledged local row
   coordinator.dispose()
 })
 
+test('a stale checkpoint acknowledgement cannot restore running after stopping', async () => {
+  const { api, coordinator, store, manifest } = await fixture()
+  await store.saveBatch(await batchFor(manifest))
+  api.upload.mockResolvedValue({ storage_key: 'checkpoint', upload_url: null, content_type: 'application/gzip', expires_at: '', already_finalized: true })
+  const finalized = deferred<never>()
+  api.finalizeCheckpoint.mockImplementationOnce(() => finalized.promise)
+  await coordinator.start('job')
+  await vi.waitFor(() => expect(api.finalizeCheckpoint).toHaveBeenCalledOnce())
+  const acknowledged = deferred<void>()
+  const acknowledge = vi.spyOn(store, 'acknowledge').mockImplementationOnce(() => acknowledged.promise)
+  finalized.resolve({} as never)
+  await vi.waitFor(() => expect(acknowledge).toHaveBeenCalledOnce())
+  await coordinator.stopObserving()
+  acknowledged.resolve()
+  await turn()
+  expect(coordinator.current.state).toBe('stopped')
+  expect(api.checkpoints).not.toHaveBeenCalled()
+  coordinator.dispose()
+})
+
+test('a pending batch lookup cannot publish uploading after observation stops', async () => {
+  const { api, coordinator, store, manifest } = await fixture()
+  const pending = deferred<Awaited<ReturnType<CheckpointStore['pendingBatch']>>>()
+  const lookup = vi.spyOn(store, 'pendingBatch').mockImplementationOnce(() => pending.promise)
+  await coordinator.start('job')
+  await vi.waitFor(() => expect(lookup).toHaveBeenCalledOnce())
+  await coordinator.stopObserving()
+  pending.resolve({ version: 1, ...await batchFor(manifest) })
+  await turn()
+  expect(coordinator.current.state).toBe('stopped')
+  expect(api.upload).not.toHaveBeenCalled()
+  coordinator.dispose()
+})
+
+test('a cached batch with a valid hash but invalid payload is discarded and recomputed', async () => {
+  const { api, coordinator, store } = await fixture()
+  const bytes = new TextEncoder().encode(JSON.stringify({ invalid: true }))
+  await store.saveBatch({ jobId: 'job', sequence: 1, firstUnit: 0, lastUnit: 0, contentHash: await sha256Hex(bytes), bytes })
+  await coordinator.start('job')
+  await vi.waitFor(() => expect(coordinator.current.state).toBe('running'))
+  expect(api.upload).not.toHaveBeenCalled()
+  expect(await store.pendingBatch('job', 1, 0)).toBeNull()
+  coordinator.dispose()
+})
+
+test('a damaged cached manifest is removed and fetched again', async () => {
+  const { coordinator, store, manifest, manifestBytes, downloadSigned } = await fixture()
+  await store.cacheManifest('job', manifest.manifest_hash, new Uint8Array([1, 2, 3]))
+  await coordinator.start('job')
+  await vi.waitFor(() => expect(coordinator.current.state).toBe('running'))
+  expect(downloadSigned).toHaveBeenCalledOnce()
+  expect(Array.from((await store.manifest('job', manifest.manifest_hash)) ?? [])).toEqual(Array.from(manifestBytes))
+  coordinator.dispose()
+})
+
 test('refresh resumes a sealed unacknowledged batch at the server sequence', async () => {
-  const { api, coordinator, store, putSigned, engine } = await fixture()
-  await store.saveBatch({ jobId: 'job', sequence: 1, firstUnit: 0, lastUnit: 0, contentHash: 'saved-hash', bytes: new Uint8Array([1, 2]) })
+  const { api, coordinator, store, putSigned, engine, manifest } = await fixture()
+  const batch = await batchFor(manifest)
+  await store.saveBatch(batch)
   api.upload.mockResolvedValue({ storage_key: 'checkpoint', upload_url: 'signed://checkpoint', content_type: 'application/gzip', expires_at: '', already_finalized: false })
-  api.finalizeCheckpoint.mockResolvedValue({ sequence: 1, content_hash: 'saved-hash', byte_size: 2, result_count: 1, first_unit: 0, last_unit: 0 })
+  api.finalizeCheckpoint.mockResolvedValue({ sequence: 1, content_hash: batch.contentHash, byte_size: batch.bytes.byteLength, result_count: 1, first_unit: 0, last_unit: 0 })
   api.checkpoints.mockImplementation(() => deferred<never>().promise)
   await coordinator.start('job')
   await vi.waitFor(() => expect(api.finalizeCheckpoint).toHaveBeenCalledOnce())
-  expect(api.upload).toHaveBeenCalledWith('job', expect.objectContaining({ sequence: 1, content_hash: 'saved-hash' }))
+  expect(api.upload).toHaveBeenCalledWith('job', expect.objectContaining({ sequence: 1, content_hash: batch.contentHash }))
   expect(putSigned.mock.calls[0][0]).toBe('signed://checkpoint')
-  expect(Array.from(putSigned.mock.calls[0][1])).toEqual([1, 2])
+  expect(Array.from(putSigned.mock.calls[0][1])).toEqual(Array.from(batch.bytes))
   expect(putSigned.mock.calls[0][2]).toBe('application/gzip')
   expect(engine.search).not.toHaveBeenCalled()
   expect(await store.pendingBatch('job', 1, 0)).toBeNull()

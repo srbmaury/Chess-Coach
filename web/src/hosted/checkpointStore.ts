@@ -8,6 +8,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 
 import type { AnalysisRow } from '../analysis/classify'
+import { sha256Hex } from '../analysis/hash'
 
 export const DB_NAME = 'chess-coach-analysis'
 export const DB_VERSION = 2
@@ -48,6 +49,17 @@ function isQuotaError(error: unknown): boolean {
 function isBytes(value: unknown): value is Uint8Array {
   // IndexedDB may clone into a different realm (also exercised by fake-indexeddb).
   return Object.prototype.toString.call(value) === '[object Uint8Array]'
+}
+
+export function isAnalysisRow(value: unknown): value is AnalysisRow {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const row = value as Record<string, unknown>
+  return Number.isInteger(row.ply) && (row.best_move_uci === null || typeof row.best_move_uci === 'string')
+    && Number.isFinite(row.eval_before_cp) && Number.isFinite(row.eval_after_cp)
+    && (row.mate_before === null || Number.isFinite(row.mate_before))
+    && (row.mate_after === null || Number.isFinite(row.mate_after))
+    && Number.isFinite(row.expected_score_before) && Number.isFinite(row.expected_score_after)
+    && Number.isFinite(row.cpl) && typeof row.quality === 'string' && typeof row.quality_reason === 'string'
 }
 
 export class CheckpointStore {
@@ -153,7 +165,8 @@ export class CheckpointStore {
   async gameRows(jobId: string, unit: number, gameId: string): Promise<AnalysisRow[] | null> {
     const record = await this.db.get('games', [jobId, unit])
     if (!record) return null
-    if (record.version !== RECORD_VERSION || record.gameId !== gameId || !Array.isArray(record.rows)) {
+    if (record.version !== RECORD_VERSION || record.gameId !== gameId || !Array.isArray(record.rows)
+      || !record.rows.every(isAnalysisRow)) {
       await this.db.delete('games', [jobId, unit])
       return null
     }
@@ -172,11 +185,21 @@ export class CheckpointStore {
   async pendingBatch(jobId: string, sequence: number, firstUnit: number): Promise<BatchRecord | null> {
     const record = await this.db.get('batches', [jobId, sequence])
     if (!record) return null
-    if (record.version !== RECORD_VERSION || !isBytes(record.bytes) || record.firstUnit !== firstUnit) {
+    if (record.version !== RECORD_VERSION || !isBytes(record.bytes) || record.firstUnit !== firstUnit
+      || !Number.isInteger(record.lastUnit) || record.lastUnit < firstUnit
+      || typeof record.contentHash !== 'string' || await sha256Hex(record.bytes) !== record.contentHash) {
       await this.db.delete('batches', [jobId, sequence])
       return null
     }
     return record
+  }
+
+  async discardBatch(jobId: string, sequence: number): Promise<void> {
+    await this.db.delete('batches', [jobId, sequence])
+  }
+
+  async discardManifest(jobId: string, hash: string): Promise<void> {
+    await this.db.delete('manifests', [jobId, hash])
   }
 
   /** The server acknowledged `sequence`: evict it and every row it covers. */
