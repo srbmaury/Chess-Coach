@@ -33,4 +33,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add web/public/social-preview.png
           git commit -m "chore: regenerate social preview"
-          git push
+          git pull --rebase origin main
+          git push origin HEAD:main
