@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { apiFetch } from '../apiTransport'
 import type { HostedEnvironment } from '../hostedContext'
 import HostedShell from './HostedShell'
+import { HostedPipeline } from './pipelineDriver'
 import type { HostedConfig, HostedServices } from './services'
 
 afterEach(cleanup)
@@ -11,7 +12,7 @@ afterEach(cleanup)
 const CONFIG = {
   hosted: true, supabase_url: 'https://p.supabase.co', supabase_publishable_key: 'sb_publishable_x', analysis_enabled: true,
   engine_version: '19.0.0', config_version: '1', lease_seconds: 60, renew_interval_seconds: 20, max_upload_bytes: 1,
-  max_decompressed_bytes: 1, max_browser_cache_bytes: 1,
+  max_decompressed_bytes: 1, max_browser_cache_bytes: 1, analysis_depth: 12,
 } as HostedConfig
 const SESSION = { access_token: 'token', user: { id: 'user-1', email: 'player@example.test' } }
 
@@ -28,6 +29,10 @@ function setup(options: { session?: unknown; event?: string } = {}) {
     logout: vi.fn(async () => undefined),
     authorizedFetch: vi.fn(async (_session: unknown, input: string) => new Response(JSON.stringify({ served: input }))),
     createPracticeEngine: vi.fn(() => ({ search: vi.fn(), terminate: vi.fn() })),
+    createPipeline: vi.fn(() => new HostedPipeline({
+      api: {} as never, activeUsername: async () => null, createCoordinator: vi.fn(), capabilities: vi.fn(),
+      derive: vi.fn(), defaultDepth: 12, limits: { maxUploadBytes: 1, maxDecompressedBytes: 1 }, storage: null,
+    })),
   } as unknown as HostedServices
   let hosted: HostedEnvironment | null = null
   render(<HostedShell config={CONFIG} services={services}>
@@ -100,4 +105,17 @@ test('engine practice routes are answered in the browser, not by the server', as
 
   expect(response.status).toBe(404)
   expect(services.authorizedFetch).not.toHaveBeenCalled()
+})
+
+test('pipeline requests are answered by the in-browser pipeline', async () => {
+  const { services, hosted } = setup()
+  await screen.findByText('Classic app for player@example.test')
+  const status = await apiFetch('/api/pipeline/status')
+  expect(await status.json()).toMatchObject({ stage: null, status: 'idle' })
+  const unknown = await apiFetch('/api/pipeline/everything', { method: 'POST' })
+  expect(unknown.status).toBe(404)
+  const stop = await apiFetch('/api/pipeline/stop', { method: 'POST' })
+  expect(stop.status).toBe(409)
+  expect(hosted()!.pipeline.depth).toBe(12)
+  expect(services.authorizedFetch).not.toHaveBeenCalledWith(expect.anything(), expect.stringMatching(/^\/api\/pipeline/), expect.anything())
 })

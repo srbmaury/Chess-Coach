@@ -113,13 +113,6 @@ class FinalizeCheckpointRequest(StrictRequest):
     content_hash: str = ContentHash
 
 
-class FinalizeArtifactRequest(StrictRequest):
-    device_id: str = DeviceId
-    lease_token: str = LeaseToken
-    artifact_type: ArtifactType
-    content_hash: str = ContentHash
-
-
 class CheckpointView(BaseModel):
     sequence: int
     content_hash: str

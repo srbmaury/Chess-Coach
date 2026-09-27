@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
@@ -6,7 +6,6 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from 'rec
 import { apiFetch } from './apiTransport'
 import { HostedContext, useHosted, type HostedEnvironment } from './hostedContext'
 
-const HostedPipelinePage = lazy(() => import('./hosted/HostedPipelinePage'))
 
 import OpeningsPage from './openings/OpeningsPage'
 import { useClickToMove } from './useClickToMove'
@@ -177,8 +176,7 @@ function buildAdaptiveHistory(startFen: string, steps: AdaptiveSafeStep[]): Adap
 function Shell() {
   const hosted = useHosted()
   const nav = [['/', 'Dashboard'], ['/practice', 'Practice'], ['/mistakes', 'Mistakes'], ['/openings', 'Openings'], ['/progress', 'Progress'], ['/pipeline', 'Pipeline']]
-  const pipeline = hosted ? <Suspense fallback={<p className="muted">Loading…</p>}><HostedPipelinePage /></Suspense> : <PipelinePage />
-  return <div className="shell"><aside><div className="brand"><b>♞</b><div><strong>Chess ML Coach</strong><small>Personal training lab</small></div></div><nav>{nav.map(([to, label]) => <NavLink key={to} to={to} end={to === '/'}>{label}</NavLink>)}</nav></aside><main><Routes><Route path="/" element={<DashboardPage />} /><Route path="/practice" element={<PracticePage />} /><Route path="/mistakes" element={<MistakesPage />} /><Route path="/openings" element={<OpeningsPage />} /><Route path="/progress" element={<ProgressPage />} /><Route path="/pipeline" element={pipeline} />{hosted && <Route path="/report" element={<ReportPage />} />}</Routes></main></div>
+  return <div className="shell"><aside><div className="brand"><b>♞</b><div><strong>Chess ML Coach</strong><small>Personal training lab</small></div></div><nav>{nav.map(([to, label]) => <NavLink key={to} to={to} end={to === '/'}>{label}</NavLink>)}</nav></aside><main><Routes><Route path="/" element={<DashboardPage />} /><Route path="/practice" element={<PracticePage />} /><Route path="/mistakes" element={<MistakesPage />} /><Route path="/openings" element={<OpeningsPage />} /><Route path="/progress" element={<ProgressPage />} /><Route path="/pipeline" element={<PipelinePage />} />{hosted && <Route path="/report" element={<ReportPage />} />}</Routes></main></div>
 }
 
 /** Hosted mode shows the report in-app: a new tab could not carry the session token. */
@@ -542,22 +540,33 @@ function ProgressPage() {
 }
 function Ranking({ title, rows }: { title: string; rows: GroupRow[] }) { return <div className="panel"><h2>{title}</h2>{rows.slice(0, 8).map((row) => <div className="rank" key={row.label}><span>{row.label}</span><b>{percentage(row.accuracy)}</b></div>)}</div> }
 
+/** Pipeline progress events: the local server's stream, or the hosted in-browser pipeline. */
+function subscribePipeline(hosted: HostedEnvironment | null, listener: (progress: Record<string, any>) => void): () => void {
+  if (hosted) return hosted.pipeline.subscribe(listener)
+  const stream = new EventSource('/api/pipeline/events')
+  stream.onmessage = (event) => {
+    const progress = JSON.parse(event.data)
+    listener(progress)
+    if (['succeeded', 'failed', 'cancelled'].includes(progress.status)) stream.close()
+  }
+  return () => stream.close()
+}
+
 function PipelinePage() {
+  const hosted = useHosted()
   const [status, setStatus] = useState<Record<string, any> | null>(null)
-  const [depth, setDepth] = useState(14)
+  const [depth, setDepth] = useState(hosted ? hosted.pipeline.depth : 14)
   const [error, setError] = useState('')
   const [streamGeneration, setStreamGeneration] = useState(0)
   const reportWindowRef = useRef<Window | null>(null)
   const refresh = useCallback(() => api.pipelineStatus().then(setStatus).catch((x: Error) => setError(x.message)), [])
   useEffect(() => {
     refresh()
-    const stream = new EventSource('/api/pipeline/events')
-    stream.onmessage = (event) => {
-      const progress = JSON.parse(event.data)
+    return subscribePipeline(hosted, (progress) => {
       setStatus((old) => ({ ...old, ...progress, progress }))
       if (progress.stage === 'report' && reportWindowRef.current && !reportWindowRef.current.closed) {
         if (progress.status === 'succeeded') {
-          reportWindowRef.current.location.href = '/api/report'
+          reportWindowRef.current.location.href = hosted ? '/report' : '/api/report'
           reportWindowRef.current = null
         } else if (progress.status === 'failed') {
           reportWindowRef.current.document.body.textContent = progress.error
@@ -569,12 +578,8 @@ function PipelinePage() {
           reportWindowRef.current = null
         }
       }
-      if (['succeeded', 'failed', 'cancelled'].includes(progress.status)) {
-        stream.close()
-      }
-    }
-    return () => stream.close()
-  }, [refresh, streamGeneration])
+    })
+  }, [refresh, streamGeneration, hosted])
 
   async function start(stage: string) {
     try {
@@ -592,7 +597,7 @@ function PipelinePage() {
         }
         reportWindowRef.current = opened
       }
-      setStatus(await api.startPipeline(stage, stage === 'analyze' ? { depth } : undefined))
+      setStatus(await api.startPipeline(stage, stage === 'analyze' || hosted ? { depth } : undefined))
       setStreamGeneration((value) => value + 1)
       window.setTimeout(refresh, 250)
     } catch (x) {

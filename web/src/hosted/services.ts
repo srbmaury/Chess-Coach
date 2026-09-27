@@ -2,6 +2,7 @@
 // component can be tested without Supabase, IndexedDB, or a real engine.
 import type { Session } from '@supabase/supabase-js'
 
+import type { Transport } from '../apiTransport'
 import { EngineWorkerClient } from '../engine/workerClient'
 import { createStockfishWorker } from '../engine/stockfishWorker'
 import { HostedApi } from './api'
@@ -14,6 +15,7 @@ import { createHostedClient, type HostedBrowserConfig } from './config'
 import { AnalysisCoordinator, browserEnvironment, type CoordinatorSnapshot, type EngineHandle } from './coordinator'
 import { deriveInWorker } from './derive'
 import { detectCapabilities, deviceId, type Capabilities } from './device'
+import { HostedPipeline } from './pipelineDriver'
 import { subscribeToJob, type ProgressFeed } from './realtime'
 
 export type HostedConfig = Extract<HostedBrowserConfig, { hosted: true }>
@@ -42,6 +44,8 @@ export type HostedServices = {
   authorizedFetch(session: Session | null, input: string, init?: RequestInit): Promise<Response>
   /** A Stockfish worker for practice replies, hints, and explanations. */
   createPracticeEngine(depth: number): EngineHandle
+  /** The Pipeline page's stages, run from this tab over the signed-in `server` transport. */
+  createPipeline(server: Transport): HostedPipeline
 }
 
 export function createDefaultServices(config: HostedConfig): HostedServices {
@@ -62,7 +66,6 @@ export function createDefaultServices(config: HostedConfig): HostedServices {
         api,
         store: await storePromise,
         createEngine: (depth) => new EngineWorkerClient(createStockfishWorker, { depth }),
-        derive: deriveInWorker,
         deviceId: deviceId(),
         computeAllowed,
         limits,
@@ -74,5 +77,21 @@ export function createDefaultServices(config: HostedConfig): HostedServices {
     },
     authorizedFetch: (session, input, init) => authorizedFetch(session, input, init),
     createPracticeEngine: (depth) => new EngineWorkerClient(createStockfishWorker, { depth }),
+    createPipeline(server) {
+      const api = new HostedApi((input, init) => server(String(input), init))
+      return new HostedPipeline({
+        api,
+        activeUsername: async () => {
+          const response = await server('/api/profiles')
+          if (!response.ok) return null
+          return ((await response.json()) as { active_username: string | null }).active_username
+        },
+        createCoordinator: (computeAllowed) => this.createCoordinator(api, computeAllowed),
+        capabilities: () => detectCapabilities(),
+        derive: deriveInWorker,
+        defaultDepth: config.analysis_depth,
+        limits,
+      })
+    },
   }
 }
