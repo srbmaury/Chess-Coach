@@ -37,6 +37,28 @@ def test_served_app_returns_spa_and_keeps_unknown_api_as_404(tmp_path: Path):
     assert client.get("/api/does-not-exist").status_code == 404
 
 
+def test_served_app_serves_root_level_build_files_before_spa_fallback(tmp_path: Path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html><body>Chess UI</body></html>", encoding="utf-8")
+    preview = b"\\x89PNG\\r\\n\\x1a\\npreview"
+    (dist / "social-preview.png").write_bytes(preview)
+
+    web_app = create_served_app(
+        Settings(data_dir=tmp_path / "data", model_dir=tmp_path / "models"),
+        static_dir=dist,
+    )
+    client = TestClient(web_app)
+
+    response = client.get("/social-preview.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == preview
+
+    assert "Chess UI" in client.get("/does-not-exist.png").text
+    assert "Chess UI" in client.get("/../outside.txt").text
+
+
 def test_served_app_requires_built_frontend(tmp_path: Path):
     try:
         create_served_app(static_dir=tmp_path / "missing")
