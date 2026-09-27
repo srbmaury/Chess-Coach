@@ -46,7 +46,6 @@ export default function CommunityControls({ hosted = null, onProfileChanged, onA
 
   useEffect(() => {
     void refreshProfiles()
-    if (hosted) return
     void refreshPipeline()
     const timer = window.setInterval(() => { void refreshPipeline() }, 1000)
     return () => window.clearInterval(timer)

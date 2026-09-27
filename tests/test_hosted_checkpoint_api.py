@@ -59,7 +59,7 @@ def test_duplicate_finalization_is_idempotent(worker):
 
     again = first.post(f"/api/hosted/jobs/{job['id']}/checkpoints/finalize",
                        first.lease_body(sequence=1, content_hash=content_hash))
-    upload = first.upload(job["id"], "checkpoint", gzip_json(payload), sequence=1)
+    upload = first.upload(job["id"], gzip_json(payload), sequence=1)
 
     assert again.status_code == 200 and again.json()["sequence"] == 1
     assert upload.json()["already_finalized"] is True
@@ -68,19 +68,19 @@ def test_duplicate_finalization_is_idempotent(worker):
 
 def test_skipped_and_replayed_sequences_are_rejected(worker):
     first, job, games = worker["first"], worker["job"], worker["games"]
-    skipped = first.upload(job["id"], "checkpoint",
+    skipped = first.upload(job["id"],
                            gzip_json(checkpoint_payload(job, games, 2, 0, 1, ENGINE)), sequence=2)
     assert skipped.status_code == 409
     first.checkpoint(job["id"], 1, checkpoint_payload(job, games, 1, 0, 1, ENGINE))
     replay = gzip_json(checkpoint_payload(job, games, 1, 0, 0, ENGINE))
-    response = first.upload(job["id"], "checkpoint", replay, sequence=1)
+    response = first.upload(job["id"], replay, sequence=1)
     assert response.status_code == 409 and response.json()["code"] == "sequence_conflict"
 
 
 def test_stale_lease_cannot_finalize_after_takeover(worker):
     first, second, job, games = worker["first"], worker["second"], worker["job"], worker["games"]
     body = gzip_json(checkpoint_payload(job, games, 1, 0, 1, ENGINE))
-    assert first.upload(job["id"], "checkpoint", body, sequence=1).status_code == 200
+    assert first.upload(job["id"], body, sequence=1).status_code == 200
 
     expire_lease(worker["pg"], job["id"])
     assert second.claim(job["id"]).status_code == 200
@@ -153,72 +153,91 @@ def test_illegal_move_in_uploaded_checkpoint_is_rejected(worker):
     assert response.status_code == 422 and "legal" in response.json()["detail"]
 
 
-def test_artifacts_require_complete_analysis_and_matching_dependency(worker):
+def test_last_checkpoint_finishes_the_job_and_records_every_game(worker, pg):
     first, job = worker["first"], worker["job"]
-    early = first.upload(job["id"], "artifact", gzip_json({}), artifact_type="report")
-    assert early.status_code == 409 and early.json()["code"] == "incomplete_job"
-
     _commit_all(worker)
-    listing = first.get(f"/api/hosted/jobs/{job['id']}/checkpoints").json()
-    assert len(listing["dependency_hash"]) == 64
-    assert [item["sequence"] for item in listing["checkpoints"]] == [1, 2]
-    assert all(item["download_url"] for item in listing["checkpoints"])
 
-    wrong = first.artifact(job["id"], "report",
-                           artifact_payload("report", "0" * 64, job["analysis_config_hash"]))
-    assert wrong.status_code == 422
+    finished = worker["second"].get(f"/api/hosted/jobs/{job['id']}").json()
+    assert finished["status"] == "succeeded" and finished["worker_active"] is False
+    with pg.transaction() as connection:
+        recorded = connection.execute("SELECT count(*) FROM analyzed_games").fetchone()[0]
+    assert recorded == 3
+    # Nothing is analyzed twice: the same game list now needs no work.
+    again = first.analyze(worker["player_id"])
+    assert again["status"] == "succeeded" and again["total_units"] == 0
 
 
-def test_full_completion_and_result_reuse(worker, pg):
-    first, second, job = worker["first"], worker["second"], worker["job"]
+def test_results_can_be_built_from_partial_analysis(worker):
+    first, job, games = worker["first"], worker["job"], worker["games"]
+    first.checkpoint(job["id"], 1, checkpoint_payload(job, games, 1, 0, 1, ENGINE))
+
+    found = first.analysis_set(worker["player_id"])
+    assert (found["analyzed_games"], found["total_games"]) == (2, 3)
+    hashes = [item["content_hash"] for item in found["checkpoints"]]
+    assert all(item["download_url"] for item in found["checkpoints"])
+
+    report = first.artifact(worker["player_id"], "report",
+                            artifact_payload("report", found["dependency_hash"], job["analysis_config_hash"]), hashes)
+    assert report.status_code == 200, report.text
+    assert report.json()["compute_source"] == "community_computed"
+    pipeline = first.get(f"/api/hosted/players/{worker['player_id']}/pipeline").json()
+    assert pipeline["results"]["report"]["dependency_hash"] == found["dependency_hash"]
+
+
+def test_results_must_cite_this_players_analysis_and_match_its_dependency(worker):
+    first, job, games = worker["first"], worker["job"], worker["games"]
+    first.checkpoint(job["id"], 1, checkpoint_payload(job, games, 1, 0, 1, ENGINE))
+    found = first.analysis_set(worker["player_id"])
+    hashes = [item["content_hash"] for item in found["checkpoints"]]
+    payload = artifact_payload("report", found["dependency_hash"], job["analysis_config_hash"])
+
+    forged = first.artifact(worker["player_id"], "report", payload, ["f" * 64])
+    assert forged.status_code == 422
+    stale = first.artifact(worker["player_id"], "report",
+                           artifact_payload("report", "0" * 64, job["analysis_config_hash"]), hashes)
+    assert stale.status_code == 422
+    stranger = BrowserClient(first.client.app, worker["storage"], new_account(worker["pg"]), "device-cccccccccccccccc")
+    assert stranger.artifact(worker["player_id"], "report", payload, hashes).status_code == 403
+
+
+def test_published_puzzles_become_the_practice_set(worker, pg):
+    first, job = worker["first"], worker["job"]
     _commit_all(worker)
-    dependency = first.get(f"/api/hosted/jobs/{job['id']}/checkpoints").json()["dependency_hash"]
-    lease = first.lease_body()
-    early = first.post(f"/api/hosted/jobs/{job['id']}/complete", lease)
-    assert early.status_code == 409 and "Missing derived results" in early.json()["detail"]
-
+    found = first.analysis_set(worker["player_id"])
+    hashes = [item["content_hash"] for item in found["checkpoints"]]
     for kind in ("puzzles", "model_summary", "report"):
-        response = first.artifact(job["id"], kind,
-                                  artifact_payload(kind, dependency, job["analysis_config_hash"]))
+        response = first.artifact(worker["player_id"], kind,
+                                  artifact_payload(kind, found["dependency_hash"], job["analysis_config_hash"]), hashes)
         assert response.status_code == 200, response.text
-        assert response.json()["compute_source"] == "community_computed"
 
-    done = first.post(f"/api/hosted/jobs/{job['id']}/complete", lease)
-    assert done.status_code == 200 and done.json()["status"] == "succeeded"
     with pg.transaction() as connection:
         active = connection.execute(
-            "SELECT active_job_id::text, active_dependency_hash FROM players WHERE id = %s",
-            (worker["player_id"],),
-        ).fetchone()
-    assert active == (job["id"], dependency)
-
-    results = second.get(f"/api/hosted/profiles/{worker['player_id']}/results").json()
-    assert {item["artifact_type"] for item in results["artifacts"]} == {
-        "puzzles", "model_summary", "report"
-    }
-    assert all(item["compute_source"] == "community_computed" for item in results["artifacts"])
-    newcomer = BrowserClient(first.client.app, worker["storage"], new_account(pg), "device-dddddddddddddddd")
-    newcomer.claim_profile()
-    reused = newcomer.join(worker["player_id"])
-    assert reused["id"] == job["id"] and reused["status"] == "succeeded"
+            "SELECT active_dependency_hash FROM players WHERE id = %s", (worker["player_id"],)
+        ).fetchone()[0]
+    assert active == found["dependency_hash"]
+    again = first.artifact(worker["player_id"], "report",
+                           artifact_payload("report", found["dependency_hash"], job["analysis_config_hash"]), hashes)
+    assert again.status_code == 200
 
 
 def test_quarantined_artifacts_are_hidden(worker):
     first, job = worker["first"], worker["job"]
     _commit_all(worker)
-    dependency = first.get(f"/api/hosted/jobs/{job['id']}/checkpoints").json()["dependency_hash"]
-    first.artifact(job["id"], "report", artifact_payload("report", dependency, job["analysis_config_hash"]))
+    found = first.analysis_set(worker["player_id"])
+    hashes = [item["content_hash"] for item in found["checkpoints"]]
+    first.artifact(worker["player_id"], "report",
+                   artifact_payload("report", found["dependency_hash"], job["analysis_config_hash"]), hashes)
     with worker["pg"].transaction() as connection:
         connection.execute("UPDATE derived_artifacts SET quarantined_at = now()")
 
-    results = first.get(f"/api/hosted/profiles/{worker['player_id']}/results").json()
-    assert results["artifacts"] == []
+    pipeline = first.get(f"/api/hosted/players/{worker['player_id']}/pipeline").json()
+    assert pipeline["results"] == {}
 
 
 def test_orphaned_uploads_are_cleaned_up(worker):
     first, job, games, storage = worker["first"], worker["job"], worker["games"], worker["storage"]
     body = gzip_json(checkpoint_payload(job, games, 1, 0, 1, ENGINE))
-    grant = first.upload(job["id"], "checkpoint", body, sequence=1).json()
+    grant = first.upload(job["id"], body, sequence=1).json()
     with worker["pg"].transaction() as connection:
         connection.execute("UPDATE analysis_upload_grants SET expires_at = now() - interval '2 hours'")
 

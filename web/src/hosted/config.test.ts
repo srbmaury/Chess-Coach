@@ -17,6 +17,7 @@ const hostedConfig = {
   max_upload_bytes: 8_388_608,
   max_decompressed_bytes: 33_554_432,
   max_browser_cache_bytes: 268_435_456,
+  analysis_depth: 12,
 }
 
 beforeEach(() => {

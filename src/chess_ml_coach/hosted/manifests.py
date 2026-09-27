@@ -12,7 +12,7 @@ import gzip
 import io
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -30,6 +30,9 @@ LOGGER = logging.getLogger(__name__)
 MANIFEST_SCHEMA_VERSION = 1
 DEFAULT_MAX_GAMES = 5000
 MANIFEST_MAX_AGE = timedelta(hours=6)
+
+# Called with (archives fetched, total archives) while a sync runs.
+SyncProgress = Callable[[int, int], None]
 
 
 class ManifestError(RuntimeError):
@@ -244,14 +247,19 @@ class ManifestService:
             and now - player.latest_manifest_at < max_age
         )
 
-    def _raw_games(self, username: str) -> Iterable[dict]:
+    def _raw_games(self, username: str, progress: SyncProgress | None) -> Iterable[dict]:
         # Archives are fetched serially and discarded after parsing, bounding memory.
-        for archive_url in self._client.archive_urls(username):
+        archives = self._client.archive_urls(username)
+        for index, archive_url in enumerate(archives, start=1):
             games = self._client.games_for_archive(archive_url)
             if games:
                 yield from games
+            if progress is not None:
+                progress(index, len(archives))
 
-    def build(self, player: Player) -> GameManifest:
+    def build(self, player: Player, progress: SyncProgress | None = None) -> GameManifest:
         return build_manifest(
-            player, self._raw_games(player.canonical_username), max_games=self._max_games
+            player,
+            self._raw_games(player.canonical_username, progress),
+            max_games=self._max_games,
         )

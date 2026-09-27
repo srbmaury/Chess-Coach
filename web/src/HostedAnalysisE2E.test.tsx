@@ -1,13 +1,12 @@
 // @vitest-environment node
 // End-to-end shared-analysis scenarios: real coordinators, IndexedDB resume store,
-// gzip/hash encoding, and derived pipeline against an in-memory server that enforces
+// and gzip/hash encoding against an in-memory server that enforces
 // the same lease, sequence, and subscription rules as the FastAPI service.
 import 'fake-indexeddb/auto'
 import { afterEach, expect, test, vi } from 'vitest'
 
 import type { EngineLine, ManifestGame } from './analysis/classify'
 import { canonicalJson, sha256Hex } from './analysis/hash'
-import { deriveArtifacts } from './analysis/pipeline'
 import { ENGINE_BUILD } from './engine/protocol'
 import { HostedApiError } from './hosted/api'
 import { CheckpointStore } from './hosted/checkpointStore'
@@ -35,7 +34,6 @@ class FakeServer {
   lease: { token: string; account: string; device: string; expiresAt: number } | null = null
   subscribers = new Map<string, { state: 'active' | 'stopped' | 'completed'; canCompute: boolean }>()
   checkpoints: { sequence: number; hash: string; first: number; last: number; url: string }[] = []
-  artifacts = new Map<string, string>()
   objects = new Map<string, Uint8Array>()
   grants = new Map<string, { hash: string; kind: string }>()
   tokens = 0
@@ -130,18 +128,18 @@ class FakeServer {
       },
       manifest: async () => ({
         manifest_hash: server.manifestHash, download_url: 'signed://manifest', expires_in: 300,
-        total_units: GAMES.length, analysis_config_hash: server.configHash,
+        total_units: GAMES.length, units: GAMES.map((item) => item.game_id), analysis_config_hash: server.configHash,
         engine_build_hash: server.engineHash, analysis_config: server.config,
       }),
       upload: async (_job, body) => {
         server.verify(account, body.device_id, body.lease_token)
-        const key = body.kind === 'checkpoint' ? `cp-${body.sequence}-${body.content_hash}` : `art-${body.artifact_type}-${body.content_hash}`
-        if (body.kind === 'checkpoint' && body.sequence !== server.sequence + 1) {
+        const key = `cp-${body.sequence}-${body.content_hash}`
+        if (body.sequence !== server.sequence + 1) {
           const done = server.checkpoints.find((item) => item.sequence === body.sequence && item.hash === body.content_hash)
           if (!done) throw new HostedApiError('Unexpected checkpoint sequence', 409, 'sequence_conflict')
           return { storage_key: key, upload_url: null, content_type: 'application/gzip', expires_at: '', already_finalized: true }
         }
-        server.grants.set(key, { hash: body.content_hash, kind: body.kind })
+        server.grants.set(key, { hash: body.content_hash, kind: 'checkpoint' })
         return { storage_key: key, upload_url: `signed://${key}`, content_type: 'application/gzip', expires_at: '', already_finalized: false }
       },
       finalizeCheckpoint: async (_job, body) => {
@@ -162,38 +160,15 @@ class FakeServer {
         server.sequence = body.sequence
         server.completed = payload.last_unit + 1
         server.finalizeAttempts.push({ account, accepted: true })
+        if (server.completed === GAMES.length) {
+          // The last checkpoint finishes the job for every subscriber.
+          server.status = 'succeeded'
+          server.lease = null
+          for (const [key, value] of server.subscribers) {
+            if (value.state === 'active') server.subscribers.set(key, { ...value, state: 'completed' })
+          }
+        }
         return { sequence: body.sequence, content_hash: body.content_hash, byte_size: bytes.byteLength, result_count: 0, first_unit: payload.first_unit, last_unit: payload.last_unit }
-      },
-      checkpoints: async () => ({
-        checkpoints: server.checkpoints.map((item) => ({
-          sequence: item.sequence, content_hash: item.hash, byte_size: 0, result_count: 0,
-          first_unit: item.first, last_unit: item.last, download_url: item.url,
-        })),
-        dependency_hash: await sha256Hex(canonicalJson({
-          analysis_config_hash: server.configHash, manifest_hash: server.manifestHash,
-          checkpoints: server.checkpoints.map((item) => item.hash),
-        })),
-      }),
-      finalizeArtifact: async (_job, body) => {
-        server.verify(account, body.device_id, body.lease_token)
-        server.artifacts.set(body.artifact_type, body.content_hash)
-        return {
-          artifact_type: body.artifact_type as 'report', dependency_hash: '', schema_version: '1',
-          content_hash: body.content_hash, byte_size: 0, compute_source: 'community_computed',
-          analysis_config_hash: server.configHash, created_at: '',
-        }
-      },
-      complete: async (_job, body) => {
-        server.verify(account, body.device_id, body.lease_token)
-        if (server.completed !== GAMES.length || server.artifacts.size !== 3) {
-          throw new HostedApiError('Incomplete', 409, 'incomplete_job')
-        }
-        server.status = 'succeeded'
-        server.lease = null
-        for (const [key, value] of server.subscribers) {
-          if (value.state === 'active') server.subscribers.set(key, { ...value, state: 'completed' })
-        }
-        return server.view(account)
       },
     }
   }
@@ -230,7 +205,6 @@ async function browser(server: FakeServer, account: string, device: string, opti
     api: server.api(account),
     store,
     createEngine: () => engine.engine,
-    derive: deriveArtifacts,
     deviceId: device,
     computeAllowed: options.computeAllowed ?? true,
     limits: { maxUploadBytes: 8 * 1024 * 1024, maxDecompressedBytes: 32 * 1024 * 1024 },

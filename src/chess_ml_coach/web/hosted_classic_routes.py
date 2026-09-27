@@ -209,7 +209,7 @@ def dashboard(request: Request) -> DashboardResponse:
             accuracy=summary.accuracy,
         ),
         artifacts={
-            "analysis": ArtifactState(exists=bool(player.job_id), updated_at=analyzed_at, rows=analyzed),
+            "analysis": ArtifactState(exists=analyzed > 0, updated_at=analyzed_at, rows=analyzed),
             "puzzles": state("puzzles", summary.total_puzzles),
             "model": state("model_summary"),
             "report": state("report"),

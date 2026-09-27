@@ -1,7 +1,7 @@
 // Typed client for the authenticated hosted analysis API and signed Storage URLs.
 import type {
-  ArtifactView, CheckpointView, JobView, LeaseResponse, ManifestResponse, ProfilesResponse,
-  ResultsResponse, UploadResponse,
+  AnalysisSetView, ArtifactView, CheckpointView, JobView, LeaseResponse, ManifestResponse, PipelineStateView,
+  ProfilesResponse, SyncView, UploadResponse,
 } from './types'
 
 export type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -20,6 +20,9 @@ export class HostedApiError extends Error {
 }
 
 type LeaseBody = { device_id: string; lease_token: string }
+export type ArtifactBody = {
+  depth: number; artifact_type: string; content_hash: string; checkpoint_hashes: string[]
+}
 
 export class HostedApi {
   constructor(private readonly fetcher: Fetcher) {}
@@ -54,9 +57,21 @@ export class HostedApi {
   claimProfile(username: string) {
     return this.request<ProfilesResponse>('/api/hosted/profiles', { method: 'POST', json: { username } })
   }
-  results(playerId: string) { return this.request<ResultsResponse>(`/api/hosted/profiles/${playerId}/results`) }
-  createJob(playerId: string, canCompute: boolean) {
-    return this.request<JobView>('/api/hosted/jobs', { method: 'POST', json: { player_id: playerId, can_compute: canCompute } })
+  pipeline(playerId: string, depth: number) {
+    return this.request<PipelineStateView>(`/api/hosted/players/${playerId}/pipeline?depth=${depth}`)
+  }
+  sync(playerId: string) { return this.request<SyncView>(`/api/hosted/players/${playerId}/sync`, { method: 'POST', json: {} }) }
+  analyze(playerId: string, depth: number, canCompute: boolean) {
+    return this.request<JobView>(`/api/hosted/players/${playerId}/analysis`, { method: 'POST', json: { depth, can_compute: canCompute } })
+  }
+  analysisSet(playerId: string, depth: number) {
+    return this.request<AnalysisSetView>(`/api/hosted/players/${playerId}/analysis-set?depth=${depth}`)
+  }
+  uploadArtifact(playerId: string, body: ArtifactBody & { byte_size: number }) {
+    return this.request<UploadResponse>(`/api/hosted/players/${playerId}/artifacts/uploads`, { method: 'POST', json: body })
+  }
+  finalizeArtifact(playerId: string, body: ArtifactBody) {
+    return this.request<ArtifactView>(`/api/hosted/players/${playerId}/artifacts/finalize`, { method: 'POST', json: body })
   }
   job(jobId: string) { return this.request<JobView>(`/api/hosted/jobs/${jobId}`) }
   subscribe(jobId: string, canCompute: boolean) {
@@ -76,22 +91,11 @@ export class HostedApi {
     return this.request<void>(`/api/hosted/jobs/${jobId}/lease/release`, { method: 'POST', json: lease, keepalive })
   }
   manifest(jobId: string) { return this.request<ManifestResponse>(`/api/hosted/jobs/${jobId}/manifest`) }
-  upload(jobId: string, body: LeaseBody & {
-    kind: 'checkpoint' | 'artifact'; sequence?: number; artifact_type?: string; byte_size: number; content_hash: string
-  }) {
+  upload(jobId: string, body: LeaseBody & { sequence: number; byte_size: number; content_hash: string }) {
     return this.request<UploadResponse>(`/api/hosted/jobs/${jobId}/uploads`, { method: 'POST', json: body })
   }
   finalizeCheckpoint(jobId: string, body: LeaseBody & { sequence: number; content_hash: string }) {
     return this.request<CheckpointView>(`/api/hosted/jobs/${jobId}/checkpoints/finalize`, { method: 'POST', json: body })
-  }
-  checkpoints(jobId: string) {
-    return this.request<{ checkpoints: CheckpointView[]; dependency_hash: string | null }>(`/api/hosted/jobs/${jobId}/checkpoints`)
-  }
-  finalizeArtifact(jobId: string, body: LeaseBody & { artifact_type: string; content_hash: string }) {
-    return this.request<ArtifactView>(`/api/hosted/jobs/${jobId}/artifacts/finalize`, { method: 'POST', json: body })
-  }
-  complete(jobId: string, lease: LeaseBody) {
-    return this.request<JobView>(`/api/hosted/jobs/${jobId}/complete`, { method: 'POST', json: lease })
   }
 }
 

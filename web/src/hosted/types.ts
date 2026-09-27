@@ -47,9 +47,11 @@ export type ManifestResponse = {
   download_url: string
   expires_in: number
   total_units: number
+  /** Game ids this job analyzes, in unit order. */
+  units: string[]
   analysis_config_hash: string
   engine_build_hash: string
-  analysis_config: Record<string, unknown> & { depth: number; min_group_size: number; brilliant_multipv: number }
+  analysis_config: AnalysisConfig
 }
 
 export type UploadResponse = {
@@ -82,4 +84,42 @@ export type ArtifactView = {
   download_url?: string | null
 }
 
-export type ResultsResponse = { player_id: string; artifacts: ArtifactView[] }
+export type AnalysisConfig = Record<string, unknown> & { depth: number; min_group_size: number; brilliant_multipv: number }
+
+export type SyncView = {
+  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+  current: number | null
+  total: number | null
+  game_count: number | null
+  synced_at: string | null
+}
+
+export type PipelineStateView = {
+  player_id: string
+  depth: number
+  default_depth: number
+  analysis_enabled: boolean
+  analysis_config_hash: string
+  sync: SyncView
+  total_games: number
+  analyzed_games: number
+  analyzed_moves: number
+  dependency_hash: string | null
+  job: JobView | null
+  results: Record<string, { created_at: string; dependency_hash: string }>
+}
+
+export type AnalysisSetView = {
+  manifest_hash: string
+  manifest_url: string
+  analysis_config_hash: string
+  analysis_config: AnalysisConfig
+  total_games: number
+  analyzed_games: number
+  analyzed_moves: number
+  dependency_hash: string
+  checkpoints: { content_hash: string; game_ids: string[]; download_url: string }[]
+}

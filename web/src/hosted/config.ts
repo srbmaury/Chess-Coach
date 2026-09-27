@@ -14,6 +14,7 @@ export type HostedBrowserConfig =
       max_upload_bytes: number
       max_decompressed_bytes: number
       max_browser_cache_bytes: number
+      analysis_depth: number
     }
 
 let hostedClient: SupabaseClient | undefined
@@ -59,6 +60,7 @@ export async function getHostedConfig(): Promise<HostedBrowserConfig> {
       max_upload_bytes: number('max_upload_bytes'),
       max_decompressed_bytes: number('max_decompressed_bytes'),
       max_browser_cache_bytes: number('max_browser_cache_bytes'),
+      analysis_depth: number('analysis_depth'),
     }
   } catch {
     throw new Error('Hosted sign-in is unavailable')

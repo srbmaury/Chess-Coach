@@ -52,16 +52,35 @@ def test_create_join_observe_and_manifest(api):
     assert len(first.manifest_games(created["id"])) == 3
 
 
-def test_manifest_is_built_once_while_fresh(api):
-    first, second = api["first"], api["second"]
+def test_sync_runs_on_request_and_reports_progress(api):
+    first = api["first"]
     player_id = first.claim_profile()
-    second.claim_profile()
-    first.join(player_id)
-    manifests = [key for key in api["storage"].objects if "/manifests/" in key]
+    before = first.get(f"/api/hosted/players/{player_id}/pipeline").json()
+    assert before["sync"]["status"] == "idle" and before["total_games"] == 0
+    assert first.post(f"/api/hosted/players/{player_id}/analysis", {}).status_code == 409
 
-    second.join(player_id)
+    synced = first.sync(player_id)
+    after = first.get(f"/api/hosted/players/{player_id}/pipeline").json()
 
-    assert [key for key in api["storage"].objects if "/manifests/" in key] == manifests
+    assert synced["status"] in {"running", "succeeded"}
+    assert after["sync"]["status"] == "succeeded"
+    assert (after["sync"]["current"], after["sync"]["total"]) == (1, 1)
+    assert after["sync"]["game_count"] == 3 and after["total_games"] == 3
+    assert after["analyzed_games"] == 0 and after["dependency_hash"] is None
+
+
+def test_each_depth_is_its_own_shared_analysis(api):
+    first = api["first"]
+    player_id = first.claim_profile()
+    first.sync(player_id)
+    default = first.analyze(player_id)
+    deeper = first.analyze(player_id, depth=16)
+
+    assert default["id"] != deeper["id"]
+    assert default["analysis_config_hash"] != deeper["analysis_config_hash"]
+    manifest = first.get(f"/api/hosted/jobs/{deeper['id']}/manifest").json()
+    assert manifest["analysis_config"]["depth"] == 16
+    assert first.post(f"/api/hosted/players/{player_id}/analysis", {"depth": 40}).status_code == 422
 
 
 def test_lease_grant_renew_release_over_http(api):
@@ -116,7 +135,7 @@ def test_stop_keeps_other_subscribers_and_completed_features(api):
     assert stopped["subscription_state"] == "stopped"
     assert stopped["worker_active"] is False
     assert second.get(f"/api/hosted/jobs/{job['id']}").json()["subscription_state"] == "active"
-    assert first.get(f"/api/hosted/profiles/{player_id}/results").status_code == 200
+    assert first.get(f"/api/hosted/players/{player_id}/pipeline").status_code == 200
 
 
 def test_compute_opt_out_makes_a_browser_observer_only(api):
@@ -136,7 +155,7 @@ def test_disabled_feature_flag_blocks_analysis_but_not_profiles(pg):
     client = BrowserClient(app, storage, new_account(pg), DEVICE_A)
     player_id = client.claim_profile()
 
-    response = client.post("/api/hosted/jobs", {"player_id": player_id})
+    response = client.post(f"/api/hosted/players/{player_id}/sync")
 
     assert response.status_code == 503 and response.json()["code"] == "analysis_disabled"
     assert client.get("/api/hosted/profiles").json()["analysis_enabled"] is False

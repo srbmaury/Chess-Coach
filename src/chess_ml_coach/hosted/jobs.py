@@ -174,72 +174,129 @@ class JobRepository:
         engine_build_hash: str,
         manifest_hash: str,
         manifest_storage_key: str,
-        total_units: int,
+        game_ids: list[str],
         can_compute: bool,
     ) -> SharedJob:
+        """Join the running analysis of this game list, or start one for its unanalyzed games.
+
+        Games already analyzed for this player and configuration are never analyzed
+        again, so a job covers only the games still missing when it is created. A job
+        with nothing left to do finishes immediately.
+        """
         key = (player_id, config_id, manifest_hash)
         with self._database.transaction() as connection:
-            ready = connection.execute(
+            # Serialize job creation per player so concurrent requests agree on one job.
+            connection.execute("SELECT id FROM players WHERE id = %s FOR UPDATE", (player_id,))
+            existing = connection.execute(
                 "SELECT id FROM analysis_jobs WHERE player_id = %s AND analysis_config_id = %s "
-                "AND input_game_set_hash = %s AND status = 'succeeded' "
-                "ORDER BY finished_at DESC LIMIT 1",
+                "AND input_game_set_hash = %s AND status IN ('queued', 'running', 'paused') "
+                "FOR UPDATE",
                 key,
             ).fetchone()
-            if ready:
+            if existing:
+                job_id = existing[0]
                 connection.execute(
                     "INSERT INTO job_subscribers (job_id, account_id, state, can_compute) "
-                    "VALUES (%s, %s, 'completed', %s) ON CONFLICT (job_id, account_id) "
-                    "DO UPDATE SET state = 'completed', can_compute = excluded.can_compute",
-                    (ready[0], account_id, can_compute),
+                    "VALUES (%s, %s, 'active', %s) ON CONFLICT (job_id, account_id) "
+                    "DO UPDATE SET state = 'active', can_compute = excluded.can_compute",
+                    (job_id, account_id, can_compute),
                 )
-                return _select_job(connection, str(ready[0]), account_id)
+                connection.execute(
+                    "UPDATE analysis_jobs SET status = 'queued' WHERE id = %s AND status = 'paused'",
+                    (job_id,),
+                )
+                return _select_job(connection, str(job_id), account_id)
 
-            job_id = None
-            for _ in range(2):
-                row = connection.execute(
-                    "SELECT id FROM analysis_jobs WHERE player_id = %s AND analysis_config_id = %s "
-                    "AND input_game_set_hash = %s AND status IN ('queued', 'running', 'paused') "
-                    "FOR UPDATE",
-                    key,
-                ).fetchone()
-                if row:
-                    job_id = row[0]
-                    break
-                row = connection.execute(
-                    "INSERT INTO analysis_jobs (player_id, analysis_config_id, input_game_set_hash, "
-                    "stage, status, total_work, analysis_config_hash, engine_build_hash, "
-                    "manifest_storage_key) "
-                    "SELECT %s, %s, %s, 'analyze', 'queued', %s, config_hash, %s, %s "
-                    "FROM analysis_configs WHERE id = %s "
-                    "ON CONFLICT (player_id, analysis_config_id, input_game_set_hash) "
-                    "WHERE status IN ('queued', 'running', 'paused') DO NOTHING RETURNING id",
-                    (
-                        player_id,
-                        config_id,
-                        manifest_hash,
-                        total_units,
-                        engine_build_hash,
-                        manifest_storage_key,
-                        config_id,
-                    ),
-                ).fetchone()
-                if row:
-                    job_id = row[0]
-                    break
-            if job_id is None:
-                raise JobError("Could not create or join the shared job")
+            # An unfinished job for an older game list is superseded; its analyzed games
+            # are already kept per game, so nothing is lost.
+            stale = connection.execute(
+                "UPDATE analysis_jobs SET status = 'cancelled', finished_at = now(), "
+                "lease_token_digest = NULL, lease_account_id = NULL, lease_device_id = NULL, "
+                "lease_expires_at = NULL WHERE player_id = %s AND analysis_config_id = %s "
+                "AND status IN ('queued', 'running', 'paused') RETURNING id",
+                (player_id, config_id),
+            ).fetchall()
+            for (stale_id,) in stale:
+                connection.execute(
+                    "UPDATE job_subscribers SET state = 'stopped' WHERE job_id = %s "
+                    "AND state = 'active'",
+                    (stale_id,),
+                )
 
+            analyzed = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT game_id FROM analyzed_games WHERE player_id = %s "
+                    "AND analysis_config_id = %s",
+                    (player_id, config_id),
+                ).fetchall()
+            }
+            pending = [game_id for game_id in game_ids if game_id not in analyzed]
+            finished = not pending
+            row = connection.execute(
+                "INSERT INTO analysis_jobs (player_id, analysis_config_id, input_game_set_hash, "
+                "stage, status, total_work, analysis_config_hash, engine_build_hash, "
+                "manifest_storage_key, finished_at) "
+                "SELECT %s, %s, %s, %s, %s, %s, config_hash, %s, %s, "
+                "CASE WHEN %s THEN now() END FROM analysis_configs WHERE id = %s RETURNING id",
+                (
+                    player_id, config_id, manifest_hash,
+                    "complete" if finished else "analyze",
+                    "succeeded" if finished else "queued",
+                    len(pending), engine_build_hash, manifest_storage_key, finished, config_id,
+                ),
+            ).fetchone()
+            if row is None:
+                raise JobError("Could not create the analysis job")
+            job_id = row[0]
+            if pending:
+                with connection.cursor() as cursor:
+                    cursor.executemany(
+                        "INSERT INTO job_units (job_id, unit_index, game_id) VALUES (%s, %s, %s)",
+                        [(job_id, index, game_id) for index, game_id in enumerate(pending)],
+                    )
             connection.execute(
                 "INSERT INTO job_subscribers (job_id, account_id, state, can_compute) "
-                "VALUES (%s, %s, 'active', %s) ON CONFLICT (job_id, account_id) "
-                "DO UPDATE SET state = 'active', can_compute = excluded.can_compute",
-                (job_id, account_id, can_compute),
+                "VALUES (%s, %s, %s, %s)",
+                (job_id, account_id, "completed" if finished else "active", can_compute),
+            )
+            return _select_job(connection, str(job_id), account_id)
+
+    def config_document(self, config_hash: str) -> dict:
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT config FROM analysis_configs WHERE config_hash = %s", (config_hash,)
+            ).fetchone()
+        if row is None:
+            raise JobNotFoundError("Analysis configuration not found")
+        return row[0]
+
+    def subscribe(self, job_id: str, account_id: str, can_compute: bool) -> SharedJob:
+        """Follow an unfinished job again (e.g. after stopping)."""
+        with self._database.transaction() as connection:
+            connection.execute(
+                "INSERT INTO job_subscribers (job_id, account_id, state, can_compute) "
+                "SELECT id, %s, 'active', %s FROM analysis_jobs WHERE id = %s "
+                "AND status IN ('queued', 'running', 'paused') "
+                "ON CONFLICT (job_id, account_id) DO UPDATE SET state = 'active', "
+                "can_compute = excluded.can_compute",
+                (account_id, can_compute, job_id),
             )
             connection.execute(
                 "UPDATE analysis_jobs SET status = 'queued' WHERE id = %s AND status = 'paused'",
                 (job_id,),
             )
-            return _select_job(connection, str(job_id), account_id)
+            job = _select_job(connection, job_id, account_id)
+        if job is None:
+            raise JobNotFoundError("Analysis job not found")
+        return job
+
+    def unit_game_ids(self, job_id: str) -> list[str]:
+        with self._database.transaction() as connection:
+            rows = connection.execute(
+                "SELECT game_id FROM job_units WHERE job_id = %s ORDER BY unit_index", (job_id,)
+            ).fetchall()
+        return [row[0] for row in rows]
 
     def get(self, job_id: str, account_id: str | None = None) -> SharedJob:
         with self._database.transaction() as connection:

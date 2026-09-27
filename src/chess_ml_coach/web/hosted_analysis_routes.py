@@ -11,11 +11,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
 
-from fastapi import APIRouter, FastAPI, Path, Request, Response
+from fastapi import APIRouter, FastAPI, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from ..chesscom import ChessComClient, ChessComError, ChessComNotFoundError
-from ..hosted.analysis_config import HostedAnalysisConfig
+from ..hosted.analysis_config import MAX_DEPTH, MIN_DEPTH, HostedAnalysisConfig, engine_build_hash
 from ..hosted.checkpoints import (
     CheckpointRejectedError,
     CheckpointService,
@@ -33,7 +33,7 @@ from ..hosted.leases import (
     LeaseUnavailableError,
     ObserverOnlyError,
 )
-from ..hosted.manifests import EmptyManifestError, ManifestError, ManifestService
+from ..hosted.manifests import EmptyManifestError, GameManifest, ManifestError, ManifestService
 from ..hosted.practice import PracticeRepository
 from ..hosted.profiles import (
     InvalidUsernameError,
@@ -46,24 +46,29 @@ from ..hosted.profiles import (
 )
 from ..hosted.rate_limit import InMemoryRateLimiter, RateLimitedError, RateLimiter
 from ..hosted.storage import ArtifactStorage, ObjectNotFoundError, StorageError, SupabaseStorage
+from ..hosted.sync import Runner, SyncBusyError, SyncService, _thread_runner
 from .auth import require_account
 from .hosted_analysis_schemas import (
+    AnalysisCheckpointView,
+    AnalysisRequest,
+    AnalysisSetView,
+    ArtifactFinalizeRequest,
+    ArtifactUploadRequest,
     ArtifactView,
-    CheckpointListResponse,
     CheckpointView,
     ComputePreferenceRequest,
     DeviceRequest,
-    FinalizeArtifactRequest,
     FinalizeCheckpointRequest,
-    JobCreateRequest,
     JobView,
     LeaseRequest,
     LeaseResponse,
     ManifestResponse,
+    PipelineStateView,
     ProfileCreateRequest,
     ProfilesResponse,
     ProfileView,
-    ResultsResponse,
+    ResultView,
+    SyncView,
     UploadRequest,
     UploadResponse,
 )
@@ -98,13 +103,19 @@ class HostedAnalysisServices:
     storage: ArtifactStorage
     rate_limiter: RateLimiter
     practice: PracticeRepository
+    sync: SyncService
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
-    _config_id: str | None = None
+    _config_ids: dict[int, str] = field(default_factory=dict)
+
+    def config_for(self, depth: int | None = None) -> tuple[HostedAnalysisConfig, str]:
+        """The shared analysis configuration for a Stockfish depth, and its database id."""
+        config = self.config if depth is None else self.config.with_depth(depth)
+        if config.depth not in self._config_ids:
+            self._config_ids[config.depth] = self.jobs.ensure_config(config)
+        return config, self._config_ids[config.depth]
 
     def config_id(self) -> str:
-        if self._config_id is None:
-            self._config_id = self.jobs.ensure_config(self.config)
-        return self._config_id
+        return self.config_for()[1]
 
 
 def build_hosted_analysis(
@@ -114,6 +125,7 @@ def build_hosted_analysis(
     storage: ArtifactStorage | None = None,
     chesscom: ChessComClient | None = None,
     rate_limiter: RateLimiter | None = None,
+    sync_runner: Runner | None = None,
 ) -> HostedAnalysisServices | None:
     """Construct hosted analysis services, or ``None`` when Storage is not configured."""
     if storage is None:
@@ -126,13 +138,15 @@ def build_hosted_analysis(
         )
     client = chesscom or ChessComClient()
     loader = ManifestLoader(storage)
+    profiles = ProfileRepository(database, player_lookup=client.player_profile)
+    manifests = ManifestService(client, max_games=settings.hosted_max_games)
     return HostedAnalysisServices(
         enabled=settings.hosted_browser_analysis_enabled,
         config=HostedAnalysisConfig.from_settings(settings),
-        profiles=ProfileRepository(database, player_lookup=client.player_profile),
+        profiles=profiles,
         jobs=JobRepository(database),
         leases=LeaseService(database),
-        manifests=ManifestService(client, max_games=settings.hosted_max_games),
+        manifests=manifests,
         manifest_loader=loader,
         checkpoints=CheckpointService(
             database,
@@ -144,6 +158,7 @@ def build_hosted_analysis(
         storage=storage,
         rate_limiter=rate_limiter or InMemoryRateLimiter(),
         practice=PracticeRepository(database),
+        sync=SyncService(database, manifests, loader.store, profiles, runner=sync_runner or _thread_runner),
     )
 
 
@@ -179,6 +194,7 @@ _STATUS_BY_TYPE: tuple[tuple[type[Exception], int], ...] = (
     (EmptyManifestError, 422),
     (ManifestError, 422),
     (RateLimitedError, 429),
+    (SyncBusyError, 409),
     (ObjectNotFoundError, 404),
     (StorageError, 502),
     (ChessComNotFoundError, 404),
@@ -376,66 +392,7 @@ def claim_profile(request: Request, body: ProfileCreateRequest) -> ProfilesRespo
         )
 
 
-@router.get("/profiles/{player_id}/results", response_model=ResultsResponse)
-def player_results(request: Request, player_id: PlayerId) -> ResultsResponse:
-    account = require_account(request)
-    services = _services(request, analysis=False)
-    with guarded():
-        services.profiles.require_entitled(account.id, player_id, write=False)
-        artifacts = services.checkpoints.ready_artifacts(player_id)
-        views = [
-            ArtifactView(
-                artifact_type=item.artifact_type,
-                dependency_hash=item.dependency_hash,
-                schema_version=item.schema_version,
-                content_hash=item.content_hash,
-                byte_size=item.byte_size,
-                compute_source=item.compute_source,
-                analysis_config_hash=item.analysis_config_hash,
-                created_at=item.created_at,
-                download_url=services.storage.signed_download_url(
-                    item.storage_key, expires_in=SIGNED_DOWNLOAD_SECONDS
-                ),
-            )
-            for item in artifacts
-        ]
-    return ResultsResponse(player_id=player_id, artifacts=views)
-
-
 # Jobs -----------------------------------------------------------------------------------
-
-
-@router.post("/jobs", response_model=JobView)
-def create_or_join_job(request: Request, body: JobCreateRequest) -> JobView:
-    account = require_account(request)
-    services = _services(request)
-    _limit(services, request, "join", account)
-    with guarded():
-        player = services.profiles.require_entitled(account.id, str(body.player_id))
-        if services.jobs.config_quarantined(services.config.hash):
-            raise HostedApiError(503, "config_quarantined", "Hosted analysis is paused")
-        now = services.clock()
-        if not services.manifests.is_fresh(player, now):
-            manifest = services.manifests.build(player)
-            services.manifest_loader.store(manifest)
-            player = services.profiles.record_manifest(
-                player.id,
-                manifest_hash=manifest.hash,
-                storage_key=manifest.storage_key,
-                game_count=len(manifest.games),
-                built_at=now,
-            )
-        job = services.jobs.create_or_join(
-            account_id=account.id,
-            player_id=player.id,
-            config_id=services.config_id(),
-            engine_build_hash=services.config.engine_build_hash,
-            manifest_hash=player.latest_manifest_hash,
-            manifest_storage_key=player.latest_manifest_key,
-            total_units=player.latest_manifest_game_count,
-            can_compute=body.can_compute,
-        )
-    return _job_view(job)
 
 
 @router.get("/jobs/{job_id}", response_model=JobView)
@@ -454,18 +411,7 @@ def subscribe(request: Request, job_id: JobId, body: ComputePreferenceRequest) -
     if job.terminal:
         return _job_view(job)
     with guarded():
-        return _job_view(
-            services.jobs.create_or_join(
-                account_id=account.id,
-                player_id=job.player_id,
-                config_id=services.config_id(),
-                engine_build_hash=services.config.engine_build_hash,
-                manifest_hash=job.manifest_hash,
-                manifest_storage_key=job.manifest_storage_key,
-                total_units=job.total_work,
-                can_compute=body.can_compute,
-            )
-        )
+        return _job_view(services.jobs.subscribe(job_id, account.id, body.can_compute))
 
 
 @router.post("/jobs/{job_id}/stop", response_model=JobView)
@@ -543,6 +489,9 @@ def job_manifest(request: Request, job_id: JobId, response: Response) -> Manifes
         url = services.storage.signed_download_url(
             job.manifest_storage_key, expires_in=SIGNED_DOWNLOAD_SECONDS
         )
+    with guarded():
+        document = services.jobs.config_document(job.analysis_config_hash)
+        units = services.jobs.unit_game_ids(job.id)
     response.headers["ETag"] = f'"{job.manifest_hash}"'
     response.headers["Cache-Control"] = "private, no-store"
     return ManifestResponse(
@@ -550,9 +499,10 @@ def job_manifest(request: Request, job_id: JobId, response: Response) -> Manifes
         download_url=url,
         expires_in=SIGNED_DOWNLOAD_SECONDS,
         total_units=job.total_work,
-        analysis_config_hash=services.config.hash,
-        engine_build_hash=services.config.engine_build_hash,
-        analysis_config=services.config.document(),
+        units=units,
+        analysis_config_hash=job.analysis_config_hash,
+        engine_build_hash=engine_build_hash(),
+        analysis_config=document,
     )
 
 
@@ -566,21 +516,12 @@ def create_upload(request: Request, job_id: JobId, body: UploadRequest) -> Uploa
     _limit(services, request, "upload", account)
     _entitled_job(services, account, job_id, write=True)
     with guarded():
-        if body.kind == "checkpoint":
-            if body.sequence is None or body.artifact_type is not None:
-                raise CheckpointRejectedError("Checkpoint uploads need a sequence only")
-            grant = services.checkpoints.create_checkpoint_upload(
-                job_id, account.id, body.device_id, body.lease_token,
-                sequence=body.sequence, byte_size=body.byte_size, content_hash=body.content_hash,
-            )
-        else:
-            if body.artifact_type is None or body.sequence is not None:
-                raise CheckpointRejectedError("Artifact uploads need an artifact type only")
-            grant = services.checkpoints.create_artifact_upload(
-                job_id, account.id, body.device_id, body.lease_token,
-                artifact_type=body.artifact_type, byte_size=body.byte_size,
-                content_hash=body.content_hash,
-            )
+        if body.sequence is None:
+            raise CheckpointRejectedError("Checkpoint uploads need a sequence")
+        grant = services.checkpoints.create_checkpoint_upload(
+            job_id, account.id, body.device_id, body.lease_token,
+            sequence=body.sequence, byte_size=body.byte_size, content_hash=body.content_hash,
+        )
     return UploadResponse(
         storage_key=grant.upload.storage_key,
         upload_url=grant.upload.url or None,
@@ -613,40 +554,172 @@ def finalize_checkpoint(
     )
 
 
-@router.get("/jobs/{job_id}/checkpoints", response_model=CheckpointListResponse)
-def list_checkpoints(request: Request, job_id: JobId) -> CheckpointListResponse:
+
+# Player pipeline: the classic Pipeline page's stages in hosted mode ----------------------
+
+Depth = Annotated[int, Query(ge=MIN_DEPTH, le=MAX_DEPTH)]
+
+
+def _player(services: HostedAnalysisServices, account: Account, player_id: str, *, write: bool):
+    with guarded():
+        return services.profiles.require_entitled(account.id, player_id, write=write)
+
+
+def _manifest(services: HostedAnalysisServices, player) -> GameManifest:
+    if not player.latest_manifest_hash:
+        raise HostedApiError(409, "not_synced", "Run Sync first to fetch your Chess.com games")
+    with guarded():
+        return services.manifest_loader.load(player.id, player.latest_manifest_key, player.latest_manifest_hash)
+
+
+def _config(services: HostedAnalysisServices, depth: int | None):
+    try:
+        return services.config_for(depth)
+    except ValueError as exc:
+        raise HostedApiError(422, "invalid_depth", str(exc)) from exc
+
+
+def _sync_view(state) -> SyncView:
+    return SyncView(
+        status=state.status, started_at=state.started_at, finished_at=state.finished_at,
+        error=state.error, current=state.progress.get("current"), total=state.progress.get("total"),
+        game_count=state.game_count, synced_at=state.synced_at,
+    )
+
+
+@router.get("/players/{player_id}/pipeline", response_model=PipelineStateView)
+def player_pipeline(request: Request, player_id: PlayerId, depth: Depth | None = None) -> PipelineStateView:
+    account = require_account(request)
+    services = _services(request, analysis=False)
+    player = _player(services, account, player_id, write=False)
+    config, config_id = _config(services, depth)
+    analyzed = None
+    if player.latest_manifest_hash:
+        manifest = _manifest(services, player)
+        analyzed = services.checkpoints.analysis_set(player.id, config_id, config.hash, manifest)
+    job = services.jobs.latest_for_player(player.id, config_id, account.id)
+    results = {
+        item.artifact_type: ResultView(created_at=item.created_at, dependency_hash=item.dependency_hash)
+        for item in services.checkpoints.ready_artifacts(player.id)
+    }
+    return PipelineStateView(
+        player_id=player.id,
+        depth=config.depth,
+        default_depth=services.config.depth,
+        analysis_enabled=services.enabled,
+        analysis_config_hash=config.hash,
+        sync=_sync_view(services.sync.state(player.id)),
+        total_games=analyzed.total_games if analyzed else 0,
+        analyzed_games=analyzed.analyzed_games if analyzed else 0,
+        analyzed_moves=analyzed.analyzed_moves if analyzed else 0,
+        dependency_hash=analyzed.dependency_hash if analyzed and analyzed.analyzed_games else None,
+        job=_job_view(job) if job else None,
+        results=results,
+    )
+
+
+@router.post("/players/{player_id}/sync", response_model=SyncView, status_code=202)
+def start_sync(request: Request, player_id: PlayerId) -> SyncView:
     account = require_account(request)
     services = _services(request)
-    _entitled_job(services, account, job_id, write=False)
+    _limit(services, request, "join", account)
+    player = _player(services, account, player_id, write=True)
     with guarded():
+        return _sync_view(services.sync.start(player))
+
+
+@router.post("/players/{player_id}/analysis", response_model=JobView)
+def start_analysis(request: Request, player_id: PlayerId, body: AnalysisRequest) -> JobView:
+    account = require_account(request)
+    services = _services(request)
+    _limit(services, request, "join", account)
+    player = _player(services, account, player_id, write=True)
+    config, config_id = _config(services, body.depth)
+    if services.jobs.config_quarantined(config.hash):
+        raise HostedApiError(503, "config_quarantined", "Hosted analysis is paused")
+    manifest = _manifest(services, player)
+    with guarded():
+        job = services.jobs.create_or_join(
+            account_id=account.id,
+            player_id=player.id,
+            config_id=config_id,
+            engine_build_hash=config.engine_build_hash,
+            manifest_hash=manifest.hash,
+            manifest_storage_key=manifest.storage_key,
+            game_ids=[game.game_id for game in manifest.games],
+            can_compute=body.can_compute,
+        )
+    return _job_view(job)
+
+
+@router.get("/players/{player_id}/analysis-set", response_model=AnalysisSetView)
+def analysis_set(request: Request, player_id: PlayerId, depth: Depth | None = None) -> AnalysisSetView:
+    account = require_account(request)
+    services = _services(request)
+    player = _player(services, account, player_id, write=False)
+    config, config_id = _config(services, depth)
+    manifest = _manifest(services, player)
+    with guarded():
+        found = services.checkpoints.analysis_set(player.id, config_id, config.hash, manifest)
+        manifest_url = services.storage.signed_download_url(manifest.storage_key, expires_in=SIGNED_DOWNLOAD_SECONDS)
         checkpoints = [
-            CheckpointView(
-                sequence=item.sequence,
-                content_hash=item.content_hash,
-                byte_size=item.byte_size,
-                result_count=item.result_count,
-                first_unit=item.first_unit,
-                last_unit=item.last_unit,
-                download_url=services.storage.signed_download_url(
-                    item.storage_key, expires_in=SIGNED_DOWNLOAD_SECONDS
-                ),
+            AnalysisCheckpointView(
+                content_hash=ref.content_hash,
+                game_ids=ref.game_ids,
+                download_url=services.storage.signed_download_url(ref.storage_key, expires_in=SIGNED_DOWNLOAD_SECONDS),
             )
-            for item in services.checkpoints.list_checkpoints(job_id)
+            for ref in found.checkpoints
         ]
-        dependency = services.checkpoints.dependency_for_job(job_id)
-    return CheckpointListResponse(checkpoints=checkpoints, dependency_hash=dependency)
+    return AnalysisSetView(
+        manifest_hash=manifest.hash,
+        manifest_url=manifest_url,
+        analysis_config_hash=config.hash,
+        analysis_config=config.document(),
+        total_games=found.total_games,
+        analyzed_games=found.analyzed_games,
+        analyzed_moves=found.analyzed_moves,
+        dependency_hash=found.dependency_hash,
+        checkpoints=checkpoints,
+    )
 
 
-@router.post("/jobs/{job_id}/artifacts/finalize", response_model=ArtifactView)
-def finalize_artifact(request: Request, job_id: JobId, body: FinalizeArtifactRequest) -> ArtifactView:
+@router.post("/players/{player_id}/artifacts/uploads", response_model=UploadResponse)
+def create_artifact_upload(request: Request, player_id: PlayerId, body: ArtifactUploadRequest) -> UploadResponse:
+    account = require_account(request)
+    services = _services(request)
+    _limit(services, request, "upload", account)
+    player = _player(services, account, player_id, write=True)
+    config, config_id = _config(services, body.depth)
+    manifest = _manifest(services, player)
+    with guarded():
+        grant = services.checkpoints.create_artifact_upload(
+            player_id=player.id, account_id=account.id, config_id=config_id, config_hash=config.hash,
+            manifest_hash=manifest.hash, artifact_type=body.artifact_type,
+            checkpoint_hashes=body.checkpoint_hashes, byte_size=body.byte_size,
+            content_hash=body.content_hash,
+        )
+    return UploadResponse(
+        storage_key=grant.upload.storage_key,
+        upload_url=grant.upload.url or None,
+        content_type=grant.upload.content_type,
+        expires_at=grant.expires_at,
+        already_finalized=grant.already_finalized,
+    )
+
+
+@router.post("/players/{player_id}/artifacts/finalize", response_model=ArtifactView)
+def finalize_artifact(request: Request, player_id: PlayerId, body: ArtifactFinalizeRequest) -> ArtifactView:
     account = require_account(request)
     services = _services(request)
     _limit(services, request, "finalize", account)
-    _entitled_job(services, account, job_id, write=True)
+    player = _player(services, account, player_id, write=True)
+    config, config_id = _config(services, body.depth)
+    manifest = _manifest(services, player)
     with guarded():
         artifact = services.checkpoints.finalize_artifact(
-            job_id, account.id, body.device_id, body.lease_token,
-            artifact_type=body.artifact_type, content_hash=body.content_hash,
+            player_id=player.id, config_id=config_id, config_hash=config.hash, manifest=manifest,
+            artifact_type=body.artifact_type, checkpoint_hashes=body.checkpoint_hashes,
+            content_hash=body.content_hash,
         )
     return ArtifactView(
         artifact_type=artifact.artifact_type,
@@ -658,17 +731,6 @@ def finalize_artifact(request: Request, job_id: JobId, body: FinalizeArtifactReq
         analysis_config_hash=artifact.analysis_config_hash,
         created_at=artifact.created_at,
     )
-
-
-@router.post("/jobs/{job_id}/complete", response_model=JobView)
-def complete_job(request: Request, job_id: JobId, body: LeaseRequest) -> JobView:
-    account = require_account(request)
-    services = _services(request)
-    _limit(services, request, "finalize", account)
-    _entitled_job(services, account, job_id, write=True)
-    with guarded():
-        job = services.checkpoints.complete(job_id, account.id, body.device_id, body.lease_token)
-    return _job_view(job)
 
 
 def install_hosted_analysis(app: FastAPI, services: HostedAnalysisServices | None) -> None:
