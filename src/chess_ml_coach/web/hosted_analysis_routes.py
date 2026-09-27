@@ -105,14 +105,12 @@ class HostedAnalysisServices:
     practice: PracticeRepository
     sync: SyncService
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
-    _config_ids: dict[int, str] = field(default_factory=dict)
 
     def config_for(self, depth: int | None = None) -> tuple[HostedAnalysisConfig, str]:
         """The shared analysis configuration for a Stockfish depth, and its database id."""
         config = self.config if depth is None else self.config.with_depth(depth)
-        if config.depth not in self._config_ids:
-            self._config_ids[config.depth] = self.jobs.ensure_config(config)
-        return config, self._config_ids[config.depth]
+        # Looked up every time: an id cached in memory outlives its row if data is cleared.
+        return config, self.jobs.ensure_config(config)
 
     def config_id(self) -> str:
         return self.config_for()[1]

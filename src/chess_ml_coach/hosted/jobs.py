@@ -141,6 +141,11 @@ class JobRepository:
     def ensure_config(self, config: HostedAnalysisConfig) -> str:
         document = config.document()
         with self._database.transaction() as connection:
+            found = connection.execute(
+                "SELECT id FROM analysis_configs WHERE config_hash = %s", (config.hash,)
+            ).fetchone()
+            if found:
+                return str(found[0])
             row = connection.execute(
                 "INSERT INTO analysis_configs (stockfish_version, depth, thresholds, "
                 "algorithm_version, config_hash, config) VALUES (%s, %s, %s, %s, %s, %s) "
