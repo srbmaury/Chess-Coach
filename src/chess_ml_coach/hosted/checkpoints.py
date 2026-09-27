@@ -26,6 +26,7 @@ from .database import Database
 from .jobs import SharedJob, _select_job
 from .leases import LeaseState, verify_lease
 from .manifests import GameManifest, parse_manifest_bytes
+from .practice import PracticeRepository
 from .storage import ArtifactStorage, ObjectNotFoundError, SignedUpload
 
 CHECKPOINT_SCHEMA_VERSION = 1
@@ -628,6 +629,10 @@ class CheckpointService:
                     "AND schema_version = %s",
                     (lease.player_id, artifact_type, dependency, str(ARTIFACT_SCHEMA_VERSION)),
                 ).fetchone()
+            if artifact_type == "puzzles":
+                PracticeRepository.import_puzzles(
+                    connection, lease.player_id, dependency, payload["puzzles"]
+                )
             connection.execute(
                 "UPDATE analysis_upload_grants SET consumed_at = now() WHERE storage_key = %s",
                 (key,),
@@ -668,6 +673,7 @@ class CheckpointService:
                 "AND state = 'active'",
                 (job_id,),
             )
+            PracticeRepository.activate_results(connection, lease.player_id, job_id, dependency)
             return _select_job(connection, job_id, account_id)
 
     def ready_artifacts(self, player_id: str) -> list[Artifact]:

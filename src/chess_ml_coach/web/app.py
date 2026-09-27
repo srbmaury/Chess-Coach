@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import chess
-import markdown as markdown_lib
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +25,7 @@ from .adaptive_routes import AdaptiveServiceRegistry
 from .adaptive_routes import router as adaptive_router
 from .explanation_routes import router as explanation_router
 from .hosted_analysis_routes import HostedAnalysisServices, install_hosted_analysis
+from .hosted_classic_routes import install_hosted_classic
 from .hosted_routes import router as hosted_router
 from .pipeline import (
     TERMINAL_STATUSES,
@@ -33,6 +33,7 @@ from .pipeline import (
     PipelineManager,
     UnknownPipelineStageError,
 )
+from .report_page import render_report_page
 from .schemas import (
     AdaptiveProgressSummary,
     ArtifactState,
@@ -79,45 +80,6 @@ def _artifact_state(path: Path, *, parquet_rows: bool = False) -> ArtifactState:
         updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=UTC),
         rows=rows,
     )
-
-
-def _render_report_page(report_markdown: str) -> str:
-    body = markdown_lib.markdown(report_markdown, extensions=["tables", "sane_lists"])
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Coaching report</title>
-<style>
-  :root {{ color-scheme: dark; }}
-  body {{
-    margin: 0; padding: 32px 20px 64px; background: #11130f; color: #f3f4ef;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
-    line-height: 1.6;
-  }}
-  main {{ max-width: 880px; margin: 0 auto; }}
-  h1, h2, h3 {{ line-height: 1.3; }}
-  h1 {{ font-size: 30px; margin: 0 0 20px; }}
-  h2 {{ font-size: 20px; margin: 36px 0 12px; padding-top: 16px; border-top: 1px solid #2b3026; }}
-  h2:first-of-type {{ border-top: 0; padding-top: 0; }}
-  strong {{ color: #d7ff75; }}
-  a {{ color: #d7ff75; }}
-  p, li {{ color: #f3f4ef; }}
-  ul {{ padding-left: 22px; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 12px 0 24px; font-size: 14px; }}
-  th, td {{ border: 1px solid #2b3026; padding: 8px 10px; text-align: left; }}
-  th {{ background: #1a1d17; color: #9da596; font-weight: 600; }}
-  tr:nth-child(even) td {{ background: #14170f; }}
-</style>
-</head>
-<body>
-<main>
-{body}
-</main>
-</body>
-</html>
-"""
 
 
 def _empty_training_summary() -> TrainingSummary:
@@ -208,6 +170,9 @@ def create_app(
         app.include_router(adaptive_router)
     app.include_router(hosted_router)
     install_hosted_analysis(app, hosted_analysis)
+    if hosted:
+        # The classic pages' API, backed by Postgres and the player's analysis results.
+        install_hosted_classic(app)
 
     def current() -> Settings:
         return app.state.settings
@@ -261,7 +226,7 @@ def create_app(
                 status_code=404,
                 detail="Report not found. Run the Report stage from the Pipeline page.",
             )
-        return HTMLResponse(_render_report_page(report_path.read_text(encoding="utf-8")))
+        return HTMLResponse(render_report_page(report_path.read_text(encoding="utf-8")))
 
     @local.get("/api/practice/next", response_model=PracticeNextResponse)
     def practice_next() -> PracticeNextResponse:

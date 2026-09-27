@@ -18,6 +18,10 @@ from contextlib import contextmanager
 import pytest
 
 HOSTED_TABLES = (
+    "adaptive_drills",
+    "practice_reviews",
+    "practice_states",
+    "player_puzzles",
     "analysis_upload_grants",
     "analysis_checkpoints",
     "audit_events",

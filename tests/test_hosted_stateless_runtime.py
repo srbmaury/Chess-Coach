@@ -8,16 +8,20 @@ from chess_ml_coach.config import Settings
 from chess_ml_coach.web.app import create_app
 from chess_ml_coach.web.serve import create_served_app
 
-LOCAL_ROUTES = [
+# Server-side pipeline and engine routes do not exist in hosted mode.
+LOCAL_ONLY_ROUTES = [
+    ("get", "/api/pipeline/status"),
+    ("post", "/api/pipeline/analyze"),
+    ("post", "/api/practice/abc/adaptive/start"),
+    ("get", "/api/practice/abc/explanation"),
+]
+# The classic pages' data routes are served from Postgres for signed-in accounts.
+HOSTED_CLASSIC_ROUTES = [
     ("get", "/api/dashboard"),
     ("get", "/api/report"),
     ("get", "/api/practice/next"),
     ("get", "/api/puzzles"),
     ("get", "/api/progress"),
-    ("get", "/api/pipeline/status"),
-    ("post", "/api/pipeline/analyze"),
-    ("post", "/api/adaptive/puzzles/abc/start"),
-    ("get", "/api/practice/abc/explanation"),
     ("get", "/api/profiles"),
 ]
 
@@ -56,8 +60,11 @@ def test_hosted_startup_builds_no_pipeline_or_engine_and_writes_nothing(tmp_path
     with TestClient(app) as client:
         assert client.get("/api/hosted/config").json()["hosted"] is True
         assert client.get("/api/health").status_code == 200
-        for method, path in LOCAL_ROUTES:
-            assert getattr(client, method)(path).status_code == 404, path
+        for method, path in LOCAL_ONLY_ROUTES:
+            assert getattr(client, method)(path).status_code in {404, 405}, path
+        for method, path in HOSTED_CLASSIC_ROUTES:
+            # No session and no auth configured here: refused before touching any data.
+            assert getattr(client, method)(path).status_code in {401, 503}, path
         assert client.get("/api/hosted/profiles").status_code == 503
         assert client.get("/").status_code == 200
 
