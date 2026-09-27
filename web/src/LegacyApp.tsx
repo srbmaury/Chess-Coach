@@ -4,6 +4,9 @@ import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from 'recharts'
 
+import OpeningsPage from './openings/OpeningsPage'
+import { useClickToMove } from './useClickToMove'
+
 type Training = { total_puzzles: number; due_puzzles: number; reviewed_puzzles: number; mastered_puzzles: number; total_reviews: number; accuracy: number | null }
 type Dashboard = { analyzed_moves: number; training: Training; artifacts: Record<string, { exists: boolean; updated_at?: string | null; rows?: number | null }> }
 type PracticePuzzle = { puzzle_id: string; fen: string; orientation: string; game: string; move: string; opening: string; eco: string; phase: string; motif: string; difficulty: number; source_url?: string | null }
@@ -168,8 +171,8 @@ function buildAdaptiveHistory(startFen: string, steps: AdaptiveSafeStep[]): Adap
 }
 
 function Shell() {
-  const nav = [['/', 'Dashboard'], ['/practice', 'Practice'], ['/mistakes', 'Mistakes'], ['/progress', 'Progress'], ['/pipeline', 'Pipeline']]
-  return <div className="shell"><aside><div className="brand"><b>♞</b><div><strong>Chess ML Coach</strong><small>Personal training lab</small></div></div><nav>{nav.map(([to, label]) => <NavLink key={to} to={to} end={to === '/'}>{label}</NavLink>)}</nav></aside><main><Routes><Route path="/" element={<DashboardPage />} /><Route path="/practice" element={<PracticePage />} /><Route path="/mistakes" element={<MistakesPage />} /><Route path="/progress" element={<ProgressPage />} /><Route path="/pipeline" element={<PipelinePage />} /></Routes></main></div>
+  const nav = [['/', 'Dashboard'], ['/practice', 'Practice'], ['/mistakes', 'Mistakes'], ['/openings', 'Openings'], ['/progress', 'Progress'], ['/pipeline', 'Pipeline']]
+  return <div className="shell"><aside><div className="brand"><b>♞</b><div><strong>Chess ML Coach</strong><small>Personal training lab</small></div></div><nav>{nav.map(([to, label]) => <NavLink key={to} to={to} end={to === '/'}>{label}</NavLink>)}</nav></aside><main><Routes><Route path="/" element={<DashboardPage />} /><Route path="/practice" element={<PracticePage />} /><Route path="/mistakes" element={<MistakesPage />} /><Route path="/openings" element={<OpeningsPage />} /><Route path="/progress" element={<ProgressPage />} /><Route path="/pipeline" element={<PipelinePage />} /></Routes></main></div>
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) { return <article className="metric"><span>{label}</span><strong>{value}</strong></article> }
@@ -415,6 +418,8 @@ function PracticePage() {
     }
   }
 
+  const clickToMove = useClickToMove(boardFen ?? puzzle?.fen)
+
   if (error && puzzle === undefined) return <section><Heading kicker="PRACTICE" title="Puzzle trainer" copy="Solve positions from your own games." /><ErrorBox message={error} /><button onClick={() => { void load() }}>Retry</button></section>
   if (puzzle === undefined) return <p className="muted">Loading next puzzle…</p>
   if (!puzzle) return <section className="empty"><h1>You're caught up</h1><p>No puzzles are due right now.</p></section>
@@ -436,7 +441,7 @@ function PracticePage() {
     </div>
     {error && <ErrorBox message={error} />}
     <div className="practice">
-      <div className="board"><Chessboard options={{ position: boardFen ?? puzzle.fen, boardOrientation: puzzle.orientation === 'black' ? 'black' : 'white', allowDragging: boardEnabled, onPieceDrop: ({ sourceSquare, targetSquare }) => onDrop(sourceSquare, targetSquare) }} /></div>
+      <div className="board"><Chessboard options={{ position: boardFen ?? puzzle.fen, boardOrientation: puzzle.orientation === 'black' ? 'black' : 'white', allowDragging: boardEnabled, onPieceDrop: ({ sourceSquare, targetSquare }) => onDrop(sourceSquare, targetSquare), onSquareClick: clickToMove.onSquareClick(boardEnabled, onDrop), squareStyles: clickToMove.squareStyles(boardEnabled) }} /></div>
       <div className="panel practice-info">
         <h2>{puzzle.opening} <small>({puzzle.eco})</small></h2>
         {mode === 'adaptive' && historySteps.length ? <AdaptiveLine steps={historySteps} viewingPly={viewedHistoryPly} livePly={liveHistoryPly} reviewing={reviewingHistory} onSelectPly={selectHistoryPosition} onPrevious={previousPosition} onNext={nextPosition} /> : null}
