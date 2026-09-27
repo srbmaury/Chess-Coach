@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from 'recharts'
+import { apiFetch } from './apiTransport'
+import { HostedContext, useHosted, type HostedEnvironment } from './hostedContext'
+
+const HostedPipelinePage = lazy(() => import('./hosted/HostedPipelinePage'))
 
 import OpeningsPage from './openings/OpeningsPage'
 import { useClickToMove } from './useClickToMove'
@@ -70,7 +74,7 @@ type Progress = Training & { by_motif: GroupRow[]; by_opening: GroupRow[]; daily
 type PracticeMode = 'adaptive' | 'quick'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...init })
+  const response = await apiFetch(url, { headers: { 'Content-Type': 'application/json' }, ...init })
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try {
@@ -171,8 +175,28 @@ function buildAdaptiveHistory(startFen: string, steps: AdaptiveSafeStep[]): Adap
 }
 
 function Shell() {
+  const hosted = useHosted()
   const nav = [['/', 'Dashboard'], ['/practice', 'Practice'], ['/mistakes', 'Mistakes'], ['/openings', 'Openings'], ['/progress', 'Progress'], ['/pipeline', 'Pipeline']]
-  return <div className="shell"><aside><div className="brand"><b>♞</b><div><strong>Chess ML Coach</strong><small>Personal training lab</small></div></div><nav>{nav.map(([to, label]) => <NavLink key={to} to={to} end={to === '/'}>{label}</NavLink>)}</nav></aside><main><Routes><Route path="/" element={<DashboardPage />} /><Route path="/practice" element={<PracticePage />} /><Route path="/mistakes" element={<MistakesPage />} /><Route path="/openings" element={<OpeningsPage />} /><Route path="/progress" element={<ProgressPage />} /><Route path="/pipeline" element={<PipelinePage />} /></Routes></main></div>
+  const pipeline = hosted ? <Suspense fallback={<p className="muted">Loading…</p>}><HostedPipelinePage /></Suspense> : <PipelinePage />
+  return <div className="shell"><aside><div className="brand"><b>♞</b><div><strong>Chess ML Coach</strong><small>Personal training lab</small></div></div><nav>{nav.map(([to, label]) => <NavLink key={to} to={to} end={to === '/'}>{label}</NavLink>)}</nav></aside><main><Routes><Route path="/" element={<DashboardPage />} /><Route path="/practice" element={<PracticePage />} /><Route path="/mistakes" element={<MistakesPage />} /><Route path="/openings" element={<OpeningsPage />} /><Route path="/progress" element={<ProgressPage />} /><Route path="/pipeline" element={pipeline} />{hosted && <Route path="/report" element={<ReportPage />} />}</Routes></main></div>
+}
+
+/** Hosted mode shows the report in-app: a new tab could not carry the session token. */
+function ReportPage() {
+  const [html, setHtml] = useState<string | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    apiFetch('/api/report').then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(body.detail || `Request failed (${response.status})`)
+      }
+      setHtml(await response.text())
+    }).catch((x: Error) => setError(x.message))
+  }, [])
+  if (error) return <ErrorBox message={error} />
+  if (html === null) return <p className="muted">Loading report…</p>
+  return <section><Heading kicker="REPORT" title="Coaching report" copy="Where your mistakes cluster, from your latest analysis." action={<NavLink className="button ghost" to="/">Back</NavLink>} /><iframe className="report-frame" title="Coaching report" sandbox="" srcDoc={html} /></section>
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) { return <article className="metric"><span>{label}</span><strong>{value}</strong></article> }
@@ -180,6 +204,7 @@ function Heading({ kicker, title, copy, action }: { kicker: string; title: strin
 function ErrorBox({ message }: { message: string }) { return <div className="error">{message}</div> }
 
 function DashboardPage() {
+  const hosted = useHosted()
   const [data, setData] = useState<Dashboard | null>(null)
   const [error, setError] = useState('')
   useEffect(() => { api.dashboard().then(setData).catch((x: Error) => setError(x.message)) }, [])
@@ -187,9 +212,12 @@ function DashboardPage() {
   if (!data) return <p className="muted">Loading dashboard…</p>
   return <section><Heading kicker="TODAY" title="Your training cockpit" copy="Use your own mistakes as the next study plan." action={<NavLink className="button" to="/practice">Start practice</NavLink>} /><div className="metrics"><Metric label="Due puzzles" value={data.training.due_puzzles} /><Metric label="Mastered" value={data.training.mastered_puzzles} /><Metric label="Review accuracy" value={percentage(data.training.accuracy)} /><Metric label="Analyzed moves" value={data.analyzed_moves.toLocaleString()} /></div><div className="panel"><h2>Pipeline readiness</h2><div className="artifacts">{Object.entries(data.artifacts).map(([key, value]) => {
     const content = <><i className={value.exists ? 'ready' : ''} /><span><strong>{key}</strong><small>{value.exists ? 'Ready' : 'Not built yet'}</small></span></>
-    return key === 'report' && value.exists
-      ? <a className="artifact" key={key} href="/api/report" target="_blank" rel="noopener noreferrer">{content}</a>
-      : <div className="artifact" key={key}>{content}</div>
+    if (key === 'report' && value.exists) {
+      return hosted
+        ? <NavLink className="artifact" key={key} to="/report">{content}</NavLink>
+        : <a className="artifact" key={key} href="/api/report" target="_blank" rel="noopener noreferrer">{content}</a>
+    }
+    return <div className="artifact" key={key}>{content}</div>
   })}</div></div></section>
 }
 
@@ -588,4 +616,6 @@ function PipelinePage() {
   return <section><Heading kicker="PIPELINE" title="Build your coach" copy="Run expensive operations here and watch them progress." />{error && <ErrorBox message={error} />}<div className="list">{['sync', 'analyze', 'features', 'puzzles', 'train', 'report'].map((stage) => <article className="stage" key={stage}><div><strong>{stage[0].toUpperCase() + stage.slice(1)}</strong><small>{stage === 'analyze' ? 'Stockfish evaluation' : stage === 'train' ? 'Personalized LightGBM model' : 'Pipeline stage'}</small></div>{stage === 'analyze' && <input aria-label="Stockfish depth" type="number" min={1} value={depth} disabled={analyzeActive} onChange={(event) => setDepth(Number(event.target.value))} />}{stage === 'analyze' && analyzeActive ? <button className="ghost" disabled={status?.status === 'stopping'} onClick={() => { void stop() }}>{status?.status === 'stopping' ? 'Stopping…' : 'Stop'}</button> : <button disabled={active} onClick={() => { void start(stage) }}>{active && status?.stage === stage ? 'Running…' : 'Run'}</button>}</article>)}</div>{status?.progress && <div className="panel"><h2>Live progress</h2><div className="progress-grid">{Object.entries(status.progress).filter(([key]) => !['created_at', 'sequence', 'stage'].includes(key)).map(([key, value]) => <div key={key}><span>{key.replaceAll('_', ' ')}</span><b>{String(value)}</b></div>)}</div></div>}</section>
 }
 
-export default function App() { return <BrowserRouter><Shell /></BrowserRouter> }
+export default function App({ hosted = null }: { hosted?: HostedEnvironment | null }) {
+  return <HostedContext.Provider value={hosted}><BrowserRouter><Shell /></BrowserRouter></HostedContext.Provider>
+}

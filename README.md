@@ -467,6 +467,12 @@ another subscribed browser resumes from the last checkpoint. Results are labelle
 **community computed**: the server validates structure, game identity, and move legality,
 but cannot re-verify engine evaluations.
 
+Hosted mode uses the same pages as local mode (Dashboard, Practice, Mistakes, Openings,
+Progress, Pipeline) after an email/password sign-in. The server answers the same API routes
+from Postgres, per account and active player. The Pipeline page starts or joins the shared
+browser analysis and shows its stages live. Adaptive practice and move explanations run on
+the browser's Stockfish, and only a finished drill's outcome is sent to the server.
+
 The feature is off by default (`CHESS_COACH_HOSTED_BROWSER_ANALYSIS_ENABLED=false`) and
 also needs `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (browser-safe) and
 `SUPABASE_SECRET_KEY` (server only, never sent to browsers or logged). Merging code does
