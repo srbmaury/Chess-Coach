@@ -165,3 +165,20 @@ def test_openapi_schema_generates(api):
     paths = api["app"].openapi()["paths"]
     assert "/api/hosted/jobs/{job_id}/lease/claim" in paths
     assert "/api/hosted/jobs/{job_id}/checkpoints/finalize" in paths
+
+
+def test_analysis_survives_its_config_rows_being_cleared(api):
+    first = api["first"]
+    player_id = first.claim_profile()
+    first.join(player_id)
+    # An operator clears the analysis data while the server keeps running.
+    with api["pg"].transaction() as connection:
+        connection.execute("DELETE FROM job_units")
+        connection.execute("DELETE FROM job_subscribers")
+        connection.execute("DELETE FROM analysis_jobs")
+        connection.execute("DELETE FROM analysis_configs")
+
+    response = first.post(f"/api/hosted/players/{player_id}/analysis", {})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "queued"
