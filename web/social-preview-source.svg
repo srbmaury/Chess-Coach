@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#050807"/>
+      <stop offset="0.55" stop-color="#07110d"/>
+      <stop offset="1" stop-color="#163d24"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="78%" cy="44%" r="55%">
+      <stop offset="0" stop-color="#35e982" stop-opacity=".28"/>
+      <stop offset=".55" stop-color="#20c56d" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#20c56d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0.45" stop-color="#f4f4ef"/>
+      <stop offset=".68" stop-color="#99efad"/>
+      <stop offset="1" stop-color="#32df79"/>
+    </linearGradient>
+    <linearGradient id="piece" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c120f"/>
+      <stop offset=".52" stop-color="#101d15"/>
+      <stop offset="1" stop-color="#1f6234"/>
+    </linearGradient>
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <ellipse cx="895" cy="514" rx="235" ry="44" fill="#1c6e3a" opacity=".20" filter="url(#shadow)"/>
+  <path d="M0 516 C250 498 490 505 720 520 C902 532 1055 525 1200 508 L1200 630 L0 630 Z"
+        fill="#0c1711" opacity=".82"/>
+  <path d="M0 546 H1200" stroke="#41664a" stroke-opacity=".22"/>
+  <path d="M0 592 H1200" stroke="#41664a" stroke-opacity=".14"/>
+  <path d="M126 516 L76 630 M310 516 L283 630 M495 516 L485 630 M683 516 L692 630 M870 516 L894 630 M1050 516 L1094 630"
+        stroke="#55755d" stroke-opacity=".12"/>
+
+  <text x="108" y="248" font-family="Georgia, 'Times New Roman', serif" font-size="112" font-weight="700" fill="url(#brand)">
+    Chess Coach
+  </text>
+  <text x="112" y="326" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="500" fill="#f4f3ee">
+    Train the mistakes you actually make
+  </text>
+  <text x="114" y="390" font-family="Arial, Helvetica, sans-serif" font-size="25" letter-spacing="4" fill="#aeb8b0">
+    STOCKFISH  +  ML-POWERED PERSONALIZATION
+  </text>
+  <line x1="114" y1="438" x2="179" y2="438" stroke="#43e389" stroke-width="2"/>
+  <text x="114" y="486" font-family="Arial, Helvetica, sans-serif" font-size="27" letter-spacing="3" fill="#eeeeea">
+    chess.srbmaury.com
+  </text>
+
+  <g transform="translate(748,54)">
+    <ellipse cx="232" cy="453" rx="175" ry="28" fill="#35e982" opacity=".16" filter="url(#shadow)"/>
+    <text x="72" y="428" font-family="DejaVu Sans, Arial Unicode MS, sans-serif"
+          font-size="420" fill="url(#piece)" stroke="#61f293" stroke-opacity=".26" stroke-width="2">♞</text>
+  </g>
+</svg>
