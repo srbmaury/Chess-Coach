@@ -185,6 +185,12 @@ def test_full_completion_and_result_reuse(worker, pg):
 
     done = first.post(f"/api/hosted/jobs/{job['id']}/complete", lease)
     assert done.status_code == 200 and done.json()["status"] == "succeeded"
+    with pg.transaction() as connection:
+        active = connection.execute(
+            "SELECT active_job_id::text, active_dependency_hash FROM players WHERE id = %s",
+            (worker["player_id"],),
+        ).fetchone()
+    assert active == (job["id"], dependency)
 
     results = second.get(f"/api/hosted/profiles/{worker['player_id']}/results").json()
     assert {item["artifact_type"] for item in results["artifacts"]} == {

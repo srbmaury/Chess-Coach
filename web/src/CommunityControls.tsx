@@ -1,11 +1,13 @@
 import { FormEvent, useEffect, useState } from 'react'
+import { apiFetch } from './apiTransport'
+import type { HostedEnvironment } from './hostedContext'
 
 type Profile = { username: string; display_username: string }
 type ProfileList = { active_username: string | null; profiles: Profile[] }
 type PipelineStatus = { stage?: string | null; status?: string; username?: string | null }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...init })
+  const response = await apiFetch(url, { headers: { 'Content-Type': 'application/json' }, ...init })
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try { const body = await response.json(); message = body.detail || message } catch { /* keep status message */ }
@@ -15,11 +17,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 type Props = {
+  /** Hosted mode: an account bar with sign-out; analysis lives on the Pipeline page. */
+  hosted?: HostedEnvironment | null
   onProfileChanged: () => void
   onActiveProfileChanged?: (username: string | null) => void
 }
 
-export default function CommunityControls({ onProfileChanged, onActiveProfileChanged }: Props) {
+export default function CommunityControls({ hosted = null, onProfileChanged, onActiveProfileChanged }: Props) {
   const [profiles, setProfiles] = useState<ProfileList | null>(null)
   const [username, setUsername] = useState('')
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null)
@@ -41,7 +45,9 @@ export default function CommunityControls({ onProfileChanged, onActiveProfileCha
   }
 
   useEffect(() => {
-    void refreshProfiles(); void refreshPipeline()
+    void refreshProfiles()
+    if (hosted) return
+    void refreshPipeline()
     const timer = window.setInterval(() => { void refreshPipeline() }, 1000)
     return () => window.clearInterval(timer)
   }, [])
@@ -88,6 +94,7 @@ export default function CommunityControls({ onProfileChanged, onActiveProfileCha
           <button type="submit" disabled={busy || !username.trim()}>{busy ? 'Opening…' : 'Continue'}</button>
         </form>
         {error && <span style={{color:'#ff9a9a',fontSize:13}}>{error}</span>}
+        {hosted && <span style={{marginTop:16,display:'flex',gap:10,alignItems:'center'}}><small className="muted">{hosted.email}</small><button className="ghost" onClick={hosted.signOut}>Sign out</button></span>}
       </div>
     </section>
   }
@@ -105,5 +112,6 @@ export default function CommunityControls({ onProfileChanged, onActiveProfileCha
     </form>
     {analysisActive && <button className="ghost" disabled={busy || pipeline?.status === 'stopping'} onClick={() => { void stopAnalysis() }}>{pipeline?.status === 'stopping' ? 'Stopping analysis…' : 'Stop analysis'}</button>}
     {error && <span style={{color:'#ff9a9a',fontSize:13}}>{error}</span>}
+    {hosted && <span style={{marginLeft:'auto',display:'flex',gap:10,alignItems:'center'}}><small className="muted">{hosted.email}</small><button className="ghost" onClick={hosted.signOut}>Sign out</button></span>}
   </div>
 }

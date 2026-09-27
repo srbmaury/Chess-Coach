@@ -4,17 +4,16 @@ import type { Session } from '@supabase/supabase-js'
 
 import { EngineWorkerClient } from '../engine/workerClient'
 import { createStockfishWorker } from '../engine/stockfishWorker'
-import { downloadSigned, HostedApi } from './api'
+import { HostedApi } from './api'
 import {
   authorizedFetch, logout, observeSession, requestPasswordReset, signIn, signUp, updatePassword,
   type AuthEvent, type SignUpResult, type Unsubscribe,
 } from './auth'
 import { CheckpointStore } from './checkpointStore'
 import { createHostedClient, type HostedBrowserConfig } from './config'
-import { AnalysisCoordinator, browserEnvironment, type CoordinatorSnapshot } from './coordinator'
+import { AnalysisCoordinator, browserEnvironment, type CoordinatorSnapshot, type EngineHandle } from './coordinator'
 import { deriveInWorker } from './derive'
 import { detectCapabilities, deviceId, type Capabilities } from './device'
-import { gunzipJson } from './encoding'
 import { subscribeToJob, type ProgressFeed } from './realtime'
 
 export type HostedConfig = Extract<HostedBrowserConfig, { hosted: true }>
@@ -39,7 +38,10 @@ export type HostedServices = {
   createApi(session: Session): HostedApi
   createCoordinator(api: HostedApi, computeAllowed: boolean): Promise<CoordinatorLike>
   subscribeProgress(session: Session, jobId: string, onProgress: () => void, onConnection: (connected: boolean) => void): Promise<ProgressFeed>
-  downloadArtifact<T>(url: string): Promise<T>
+  /** Same-origin API request with the current session token. */
+  authorizedFetch(session: Session | null, input: string, init?: RequestInit): Promise<Response>
+  /** A Stockfish worker for practice replies, hints, and explanations. */
+  createPracticeEngine(depth: number): EngineHandle
 }
 
 export function createDefaultServices(config: HostedConfig): HostedServices {
@@ -70,8 +72,7 @@ export function createDefaultServices(config: HostedConfig): HostedServices {
     async subscribeProgress(session, jobId, onProgress, onConnection) {
       return subscribeToJob(createHostedClient(config), jobId, session.access_token, onProgress, onConnection)
     },
-    async downloadArtifact<T>(url: string) {
-      return gunzipJson<T>(await downloadSigned(url, limits.maxUploadBytes), limits.maxDecompressedBytes)
-    },
+    authorizedFetch: (session, input, init) => authorizedFetch(session, input, init),
+    createPracticeEngine: (depth) => new EngineWorkerClient(createStockfishWorker, { depth }),
   }
 }

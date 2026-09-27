@@ -327,3 +327,24 @@ def artifact_payload(artifact_type: str, dependency: str, config_hash: str, **fi
         "report": {"markdown": "# Chess ML Coach Report\n", "overall": {"samples": 0}},
     }[artifact_type]
     return {**base, **defaults, **fields}
+
+
+# Hosted practice ---------------------------------------------------------------------------
+
+
+def parity_puzzles(count: int | None = None) -> list[dict]:
+    import json
+    from pathlib import Path
+
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "browser_parity.json").read_text())
+    puzzles = fixture["puzzles"]
+    return puzzles if count is None else puzzles[:count]
+
+
+def publish_results(pg, player_id: str, puzzles: list[dict], dependency: str = "d" * 64) -> None:
+    """Make ``puzzles`` the player's active analysis result, as a completed job would."""
+    from chess_ml_coach.hosted.practice import PracticeRepository
+
+    with pg.transaction() as connection:
+        PracticeRepository.import_puzzles(connection, player_id, dependency, puzzles)
+        PracticeRepository.activate_results(connection, player_id, None, dependency)

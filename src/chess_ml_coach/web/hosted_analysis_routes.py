@@ -34,6 +34,7 @@ from ..hosted.leases import (
     ObserverOnlyError,
 )
 from ..hosted.manifests import EmptyManifestError, ManifestError, ManifestService
+from ..hosted.practice import PracticeRepository
 from ..hosted.profiles import (
     InvalidUsernameError,
     NotEntitledError,
@@ -96,6 +97,7 @@ class HostedAnalysisServices:
     checkpoints: CheckpointService
     storage: ArtifactStorage
     rate_limiter: RateLimiter
+    practice: PracticeRepository
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     _config_id: str | None = None
 
@@ -141,6 +143,7 @@ def build_hosted_analysis(
         ),
         storage=storage,
         rate_limiter=rate_limiter or InMemoryRateLimiter(),
+        practice=PracticeRepository(database),
     )
 
 
@@ -221,7 +224,7 @@ def guarded() -> _Guard:
 class BodyLimitMiddleware:
     """Reject oversized hosted API bodies before they are buffered."""
 
-    def __init__(self, app, *, max_bytes: int = MAX_REQUEST_BYTES, prefix: str = "/api/hosted/"):
+    def __init__(self, app, *, max_bytes: int = MAX_REQUEST_BYTES, prefix: str = "/api/"):
         self.app = app
         self.max_bytes = max_bytes
         self.prefix = prefix

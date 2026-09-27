@@ -114,7 +114,7 @@ def test_migrations_apply_and_record_both_versions(pg):
         versions = [row[0] for row in connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()]
-    assert versions == ["0001_hosted_schema", "0002_browser_analysis"]
+    assert versions == ["0001_hosted_schema", "0002_browser_analysis", "0003_hosted_practice"]
 
 
 def test_one_non_terminal_job_per_shared_key_including_paused(pg):
