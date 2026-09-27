@@ -75,7 +75,7 @@ def create_job(pg, account_id: str, player_id: str, *, manifest_hash: str = "m" 
         engine_build_hash=config.engine_build_hash,
         manifest_hash=manifest_hash,
         manifest_storage_key=f"players/{player_id}/manifests/{manifest_hash}.json.gz",
-        total_units=total_units,
+        game_ids=[f"game-{index}" for index in range(total_units)],
         can_compute=can_compute,
     )
 
@@ -199,7 +199,8 @@ def hosted_app(pg, *, storage=None, enabled: bool = True, games: list[str] | Non
     )
     storage = storage or InMemoryStorage()
     services = build_hosted_analysis(
-        settings, pg, storage=storage, chesscom=chesscom_client(games), rate_limiter=rate_limiter
+        settings, pg, storage=storage, chesscom=chesscom_client(games), rate_limiter=rate_limiter,
+        sync_runner=lambda task: task(),  # sync inline so tests see its result immediately
     )
     app = create_app(
         settings,
@@ -235,10 +236,23 @@ class BrowserClient:
         return next(p["player_id"] for p in response.json()["profiles"]
                     if p["username"] == username.lower())
 
-    def join(self, player_id: str, can_compute: bool = True) -> dict:
-        response = self.post("/api/hosted/jobs", {"player_id": player_id, "can_compute": can_compute})
+    def sync(self, player_id: str) -> dict:
+        response = self.post(f"/api/hosted/players/{player_id}/sync")
+        assert response.status_code == 202, response.text
+        return response.json()
+
+    def analyze(self, player_id: str, can_compute: bool = True, depth: int | None = None) -> dict:
+        body = {"can_compute": can_compute, **({"depth": depth} if depth else {})}
+        response = self.post(f"/api/hosted/players/{player_id}/analysis", body)
         assert response.status_code == 200, response.text
         return response.json()
+
+    def join(self, player_id: str, can_compute: bool = True) -> dict:
+        """Sync (if nobody has yet) and start or join the player's analysis."""
+        state = self.get(f"/api/hosted/players/{player_id}/pipeline").json()
+        if state["sync"]["synced_at"] is None:
+            self.sync(player_id)
+        return self.analyze(player_id, can_compute)
 
     def claim(self, job_id: str):
         response = self.post(f"/api/hosted/jobs/{job_id}/lease/claim", {"device_id": self.device_id})
@@ -250,19 +264,20 @@ class BrowserClient:
         return {"device_id": self.device_id, "lease_token": self.token, **extra}
 
     def manifest_games(self, job_id: str) -> list[dict]:
+        """The job's games in unit order (only the games it still has to analyze)."""
         import gzip
         import json
 
         response = self.get(f"/api/hosted/jobs/{job_id}/manifest")
         assert response.status_code == 200, response.text
         key = response.json()["download_url"].split("memory://download/", 1)[1].split("?")[0]
-        return json.loads(gzip.decompress(self.storage.objects[key].body))["games"]
+        games = {game["game_id"]: game for game in json.loads(gzip.decompress(self.storage.objects[key].body))["games"]}
+        return [games[game_id] for game_id in response.json()["units"]]
 
-    def upload(self, job_id: str, kind: str, body: bytes, **fields):
+    def upload(self, job_id: str, body: bytes, **fields):
         from hashlib import sha256
 
-        request = self.lease_body(kind=kind, byte_size=len(body),
-                                  content_hash=sha256(body).hexdigest(), **fields)
+        request = self.lease_body(byte_size=len(body), content_hash=sha256(body).hexdigest(), **fields)
         response = self.post(f"/api/hosted/jobs/{job_id}/uploads", request)
         if response.status_code == 200 and response.json()["upload_url"]:
             self.storage.upload_signed(response.json()["storage_key"], body)
@@ -272,20 +287,30 @@ class BrowserClient:
         from hashlib import sha256
 
         body = gzip_json(payload)
-        upload = self.upload(job_id, "checkpoint", body, sequence=sequence)
+        upload = self.upload(job_id, body, sequence=sequence)
         assert upload.status_code == 200, upload.text
         return self.post(f"/api/hosted/jobs/{job_id}/checkpoints/finalize",
                          self.lease_body(sequence=sequence, content_hash=sha256(body).hexdigest()))
 
-    def artifact(self, job_id: str, artifact_type: str, payload: dict):
+    def analysis_set(self, player_id: str, depth: int | None = None) -> dict:
+        query = f"?depth={depth}" if depth else ""
+        response = self.get(f"/api/hosted/players/{player_id}/analysis-set{query}")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def artifact(self, player_id: str, artifact_type: str, payload: dict, checkpoint_hashes: list[str]):
+        """Publish a result the way the browser's Puzzles/Train/Report stages do."""
         from hashlib import sha256
 
         body = gzip_json(payload)
-        upload = self.upload(job_id, "artifact", body, artifact_type=artifact_type)
-        assert upload.status_code == 200, upload.text
-        return self.post(f"/api/hosted/jobs/{job_id}/artifacts/finalize",
-                         self.lease_body(artifact_type=artifact_type,
-                                         content_hash=sha256(body).hexdigest()))
+        fields = {"artifact_type": artifact_type, "content_hash": sha256(body).hexdigest(),
+                  "checkpoint_hashes": checkpoint_hashes}
+        upload = self.post(f"/api/hosted/players/{player_id}/artifacts/uploads", {**fields, "byte_size": len(body)})
+        if upload.status_code != 200:
+            return upload
+        if upload.json()["upload_url"]:
+            self.storage.upload_signed(upload.json()["storage_key"], body)
+        return self.post(f"/api/hosted/players/{player_id}/artifacts/finalize", fields)
 
 
 def gzip_json(document: object) -> bytes:

@@ -145,37 +145,34 @@ class PracticeRepository:
         )
 
     def analyzed_moves(self, player: ActivePlayer) -> int:
-        if not player.job_id:
-            return 0
+        """Moves analyzed for this player (at the depth with the most analysis)."""
         with self._database.transaction() as connection:
             row = connection.execute(
-                "SELECT COALESCE(sum(result_count), 0) FROM analysis_checkpoints WHERE job_id = %s",
-                (player.job_id,),
+                "SELECT COALESCE(max(total), 0) FROM (SELECT sum(move_count) AS total "
+                "FROM analyzed_games WHERE player_id = %s GROUP BY analysis_config_id) totals",
+                (player.player_id,),
             ).fetchone()
         return int(row[0])
 
     def result_artifacts(self, player: ActivePlayer) -> dict[str, datetime]:
-        """Ready artifact types of the active result and when each was made."""
-        if not player.dependency_hash:
-            return {}
+        """When each result type (puzzles, model, report) was last published."""
         with self._database.transaction() as connection:
             rows = connection.execute(
-                "SELECT artifact_type, created_at FROM derived_artifacts WHERE player_id = %s "
-                "AND account_id IS NULL AND dependency_hash = %s AND status = 'ready' "
-                "AND quarantined_at IS NULL",
-                (player.player_id, player.dependency_hash),
+                "SELECT artifact_type, max(created_at) FROM derived_artifacts WHERE player_id = %s "
+                "AND account_id IS NULL AND status = 'ready' AND quarantined_at IS NULL "
+                "GROUP BY artifact_type",
+                (player.player_id,),
             ).fetchall()
         return {row[0]: row[1] for row in rows}
 
     def artifact_key(self, player: ActivePlayer, artifact_type: str) -> str | None:
-        if not player.dependency_hash:
-            return None
+        """The latest published result of this type."""
         with self._database.transaction() as connection:
             row = connection.execute(
                 "SELECT storage_key FROM derived_artifacts WHERE player_id = %s "
-                "AND account_id IS NULL AND dependency_hash = %s AND artifact_type = %s "
-                "AND status = 'ready' AND quarantined_at IS NULL",
-                (player.player_id, player.dependency_hash, artifact_type),
+                "AND account_id IS NULL AND artifact_type = %s AND status = 'ready' "
+                "AND quarantined_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                (player.player_id, artifact_type),
             ).fetchone()
         return row[0] if row else None
 

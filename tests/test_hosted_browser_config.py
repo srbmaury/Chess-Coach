@@ -34,6 +34,7 @@ def test_hosted_browser_config_is_public_and_exposes_only_browser_values():
         "engine_version": "19.0.0",
         "config_version": "1",
         "analysis_config_hash": HostedAnalysisConfig.from_settings(settings).hash,
+        "analysis_depth": 12,
         "lease_seconds": 60,
         "renew_interval_seconds": 20,
         "max_upload_bytes": 8 * 1024 * 1024,

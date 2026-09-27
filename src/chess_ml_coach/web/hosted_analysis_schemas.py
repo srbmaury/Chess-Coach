@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,11 +55,6 @@ class ProfilesResponse(BaseModel):
     profiles: list[ProfileView]
 
 
-class JobCreateRequest(StrictRequest):
-    player_id: UUID
-    can_compute: bool = False
-
-
 class ComputePreferenceRequest(StrictRequest):
     can_compute: bool
 
@@ -89,6 +83,7 @@ class ManifestResponse(BaseModel):
     download_url: str
     expires_in: int
     total_units: int
+    units: list[str]
     analysis_config_hash: str
     engine_build_hash: str
     analysis_config: dict[str, object]
@@ -97,9 +92,8 @@ class ManifestResponse(BaseModel):
 class UploadRequest(StrictRequest):
     device_id: str = DeviceId
     lease_token: str = LeaseToken
-    kind: Literal["checkpoint", "artifact"]
+    kind: Literal["checkpoint"] = "checkpoint"
     sequence: int | None = Field(default=None, ge=1)
-    artifact_type: ArtifactType | None = None
     byte_size: int = Field(ge=1)
     content_hash: str = ContentHash
 
@@ -136,11 +130,6 @@ class CheckpointView(BaseModel):
     download_url: str | None = None
 
 
-class CheckpointListResponse(BaseModel):
-    checkpoints: list[CheckpointView]
-    dependency_hash: str | None
-
-
 class ArtifactView(BaseModel):
     artifact_type: str
     dependency_hash: str
@@ -153,6 +142,66 @@ class ArtifactView(BaseModel):
     download_url: str | None = None
 
 
-class ResultsResponse(BaseModel):
+class SyncView(BaseModel):
+    status: Literal["idle", "running", "succeeded", "failed"]
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    current: int | None
+    total: int | None
+    game_count: int | None
+    synced_at: datetime | None
+
+
+class ResultView(BaseModel):
+    created_at: datetime
+    dependency_hash: str
+
+
+class PipelineStateView(BaseModel):
     player_id: str
-    artifacts: list[ArtifactView]
+    depth: int
+    default_depth: int
+    analysis_enabled: bool
+    analysis_config_hash: str
+    sync: SyncView
+    total_games: int
+    analyzed_games: int
+    analyzed_moves: int
+    dependency_hash: str | None
+    job: JobView | None
+    results: dict[str, ResultView]
+
+
+class AnalysisRequest(StrictRequest):
+    depth: int | None = Field(default=None, ge=1, le=20)
+    can_compute: bool = True
+
+
+class AnalysisCheckpointView(BaseModel):
+    content_hash: str
+    game_ids: list[str]
+    download_url: str
+
+
+class AnalysisSetView(BaseModel):
+    manifest_hash: str
+    manifest_url: str
+    analysis_config_hash: str
+    analysis_config: dict[str, object]
+    total_games: int
+    analyzed_games: int
+    analyzed_moves: int
+    dependency_hash: str
+    checkpoints: list[AnalysisCheckpointView]
+
+
+class ArtifactFinalizeRequest(StrictRequest):
+    depth: int | None = Field(default=None, ge=1, le=20)
+    artifact_type: ArtifactType
+    content_hash: str = ContentHash
+    checkpoint_hashes: list[str] = Field(min_length=1, max_length=5000)
+
+
+class ArtifactUploadRequest(ArtifactFinalizeRequest):
+    byte_size: int = Field(ge=1)

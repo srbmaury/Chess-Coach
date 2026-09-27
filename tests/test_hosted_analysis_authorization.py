@@ -50,10 +50,12 @@ def test_unentitled_account_cannot_see_or_join_another_players_job(api):
     stranger, job = api["stranger"], api["job"]
 
     assert stranger.get(f"/api/hosted/jobs/{job['id']}").status_code == 404
-    assert stranger.post("/api/hosted/jobs", {"player_id": api["player_id"]}).status_code == 403
+    assert stranger.post(f"/api/hosted/players/{api['player_id']}/analysis", {}).status_code == 403
+    assert stranger.post(f"/api/hosted/players/{api['player_id']}/sync").status_code == 403
     assert stranger.claim(job["id"]).status_code == 403
     assert stranger.get(f"/api/hosted/jobs/{job['id']}/checkpoints").status_code == 404
-    assert stranger.get(f"/api/hosted/profiles/{api['player_id']}/results").status_code == 403
+    assert stranger.get(f"/api/hosted/players/{api['player_id']}/pipeline").status_code == 403
+    assert stranger.get(f"/api/hosted/players/{api['player_id']}/analysis-set").status_code == 403
 
 
 def test_stopped_subscription_cannot_claim_or_download_the_manifest(api):
@@ -80,7 +82,7 @@ def test_another_devices_lease_cannot_be_renewed_or_released(api):
 def test_unknown_ids_are_not_found(api):
     unknown = "00000000-0000-0000-0000-000000000000"
     assert api["owner"].get(f"/api/hosted/jobs/{unknown}").status_code == 404
-    assert api["owner"].post("/api/hosted/jobs", {"player_id": unknown}).status_code == 403
+    assert api["owner"].post(f"/api/hosted/players/{unknown}/analysis", {}).status_code == 403
 
 
 @pytest.mark.parametrize("device_id", ["short", "x" * 65, "bad device id!!!!!", ""])
@@ -92,8 +94,8 @@ def test_malformed_device_ids_are_rejected(api, device_id):
 
 def test_forged_identity_and_status_fields_are_rejected(api):
     owner, job = api["owner"], api["job"]
-    forged = owner.post("/api/hosted/jobs", {"player_id": api["player_id"],
-                                             "account_id": api["stranger"].account_id})
+    forged = owner.post(f"/api/hosted/players/{api['player_id']}/analysis",
+                        {"account_id": api["stranger"].account_id})
     status = owner.post(f"/api/hosted/jobs/{job['id']}/lease/claim",
                         {"device_id": DEVICE_A, "status": "succeeded"})
 

@@ -41,6 +41,7 @@ def test_discover_migrations_returns_sorted_versions():
         "0001_hosted_schema",
         "0002_browser_analysis",
         "0003_hosted_practice",
+        "0004_hosted_pipeline",
     )
 
 
@@ -51,6 +52,7 @@ def test_apply_migrations_is_idempotent():
         "0001_hosted_schema",
         "0002_browser_analysis",
         "0003_hosted_practice",
+        "0004_hosted_pipeline",
     )
     first_execution_count = len(database.connection.executed)
 

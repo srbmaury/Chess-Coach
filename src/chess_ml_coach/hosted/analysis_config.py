@@ -8,7 +8,7 @@ from the published document and refuse to work on a mismatch.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 
 from ..config import Settings
@@ -31,6 +31,9 @@ REPORT_SCHEMA_VERSION = 1
 BRILLIANT_MULTIPV = 2
 
 ARTIFACT_TYPES = ("puzzles", "model_summary", "report")
+# Browser Stockfish depths a user may choose on the Pipeline page.
+MIN_DEPTH = 1
+MAX_DEPTH = 20
 
 
 def engine_build_hash() -> str:
@@ -54,6 +57,11 @@ class HostedAnalysisConfig:
             blunder_cpl=settings.thresholds.blunder,
             min_group_size=settings.min_group_size,
         )
+
+    def with_depth(self, depth: int) -> HostedAnalysisConfig:
+        if not MIN_DEPTH <= depth <= MAX_DEPTH:
+            raise ValueError(f"Depth must be between {MIN_DEPTH} and {MAX_DEPTH}")
+        return replace(self, depth=depth)
 
     def document(self) -> dict[str, object]:
         return {
