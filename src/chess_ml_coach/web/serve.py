@@ -104,10 +104,22 @@ def create_served_app(
     def unknown_api_write(full_path: str):
         raise HTTPException(status_code=404, detail="API route not found")
 
+    dist_root = dist.resolve()
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API route not found")
+
+        requested_path = (dist_root / full_path).resolve()
+        try:
+            requested_path.relative_to(dist_root)
+        except ValueError:
+            requested_path = None
+
+        if requested_path is not None and requested_path.is_file():
+            return FileResponse(requested_path)
+
         return FileResponse(index_path)
 
     return app
