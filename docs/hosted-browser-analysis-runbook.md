@@ -5,7 +5,10 @@ nothing in production: every step below is an explicit action.
 
 ## 0. Prerequisites
 
-- A Supabase project with Auth (magic links), Postgres, Storage, and Realtime.
+- A Supabase project with Auth (email + password), Postgres, Storage, and Realtime.
+- Auth email delivered through the `send-email` hook and Brevo: follow
+  [auth-email-runbook.md](auth-email-runbook.md) first. Supabase's built-in email
+  allows only a couple of messages per hour.
 - Session tokens are verified with the project's published ES256/RS256 signing keys
   (see README, *Hosted authentication*). No JWT secret is needed.
 - API keys from **Settings → API Keys**:
@@ -15,7 +18,7 @@ nothing in production: every step below is an explicit action.
 
 - **Auth → URL Configuration**:
   - Set **Site URL** to the public app URL (for example
-    `https://chess-ml-coach.onrender.com`). Otherwise magic links point at Supabase's
+    `https://chess-ml-coach.onrender.com`). Otherwise confirmation and reset links point at Supabase's
     default `http://localhost:3000`.
   - Add the same origin under **Redirect URLs**, plus `http://127.0.0.1:8000` for local
     testing. The app asks Supabase to return users to the page they signed in from, and

@@ -29,6 +29,7 @@
     "@vitejs/plugin-react": "6.1.1",
     "fake-indexeddb": "6.2.5",
     "jsdom": "^26.1.0",
+    "standardwebhooks": "1.0.0",
     "typescript": "^5.9.0",
     "vite": "8.3.0",
     "vitest": "5.0.0"

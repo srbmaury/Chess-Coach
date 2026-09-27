@@ -5,7 +5,10 @@ import type { Session } from '@supabase/supabase-js'
 import { EngineWorkerClient } from '../engine/workerClient'
 import { createStockfishWorker } from '../engine/stockfishWorker'
 import { downloadSigned, HostedApi } from './api'
-import { authorizedFetch, logout, observeSession, requestMagicLink, type Unsubscribe } from './auth'
+import {
+  authorizedFetch, logout, observeSession, requestPasswordReset, signIn, signUp, updatePassword,
+  type AuthEvent, type SignUpResult, type Unsubscribe,
+} from './auth'
 import { CheckpointStore } from './checkpointStore'
 import { createHostedClient, type HostedBrowserConfig } from './config'
 import { AnalysisCoordinator, browserEnvironment, type CoordinatorSnapshot } from './coordinator'
@@ -26,8 +29,11 @@ export interface CoordinatorLike {
 }
 
 export type HostedServices = {
-  observeSession(callback: (session: Session | null) => void): Unsubscribe
-  requestMagicLink(email: string): Promise<void>
+  observeSession(callback: (session: Session | null, event?: AuthEvent) => void): Unsubscribe
+  signIn(email: string, password: string): Promise<void>
+  signUp(email: string, password: string): Promise<SignUpResult>
+  requestPasswordReset(email: string): Promise<void>
+  updatePassword(password: string): Promise<void>
   logout(): Promise<void>
   capabilities(): Promise<Capabilities>
   createApi(session: Session): HostedApi
@@ -41,7 +47,10 @@ export function createDefaultServices(config: HostedConfig): HostedServices {
   let storePromise: Promise<CheckpointStore> | undefined
   return {
     observeSession,
-    requestMagicLink,
+    signIn,
+    signUp,
+    requestPasswordReset,
+    updatePassword,
     logout,
     capabilities: () => detectCapabilities(),
     createApi: (session) => new HostedApi((input, init) => authorizedFetch(session, input, init)),

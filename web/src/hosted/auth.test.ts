@@ -3,7 +3,10 @@ import { beforeEach, expect, test, vi } from 'vitest'
 const mocks = vi.hoisted(() => {
   const client = {
     auth: {
-      signInWithOtp: vi.fn(),
+      signUp: vi.fn(),
+      signInWithPassword: vi.fn(),
+      resetPasswordForEmail: vi.fn(),
+      updateUser: vi.fn(),
       getSession: vi.fn(),
       onAuthStateChange: vi.fn(),
       signOut: vi.fn(),
@@ -21,26 +24,93 @@ vi.mock('./config', () => ({
   createHostedClient: mocks.createHostedClient,
 }))
 
-import { authorizedFetch, logout, observeSession, requestMagicLink } from './auth'
+import {
+  authorizedFetch, logout, observeSession, requestPasswordReset, signIn, signUp, updatePassword,
+} from './auth'
 
 const oldSession = { access_token: 'old-token' }
 const freshSession = { access_token: 'fresh-token' }
 
 beforeEach(() => {
   vi.unstubAllGlobals()
-  mocks.client.auth.signInWithOtp.mockReset().mockResolvedValue({ error: null })
+  mocks.client.auth.signUp.mockReset().mockResolvedValue({ data: { session: null, user: {} }, error: null })
+  mocks.client.auth.signInWithPassword.mockReset().mockResolvedValue({ data: {}, error: null })
+  mocks.client.auth.resetPasswordForEmail.mockReset().mockResolvedValue({ data: {}, error: null })
+  mocks.client.auth.updateUser.mockReset().mockResolvedValue({ data: {}, error: null })
   mocks.client.auth.getSession.mockReset().mockResolvedValue({ data: { session: freshSession }, error: null })
   mocks.client.auth.signOut.mockReset().mockResolvedValue({ error: null })
   mocks.client.auth.onAuthStateChange.mockReset()
 })
 
-test('normalizes the email sent in a magic-link request', async () => {
-  await requestMagicLink('  Player@Example.COM  ')
+test('sign-up normalizes the email, returns to this site, and asks for confirmation', async () => {
+  expect(await signUp('  Player@Example.COM  ', 'correct horse')).toBe('confirm_email')
 
-  expect(mocks.client.auth.signInWithOtp).toHaveBeenCalledWith({
+  expect(mocks.client.auth.signUp).toHaveBeenCalledWith({
     email: 'player@example.com',
+    password: 'correct horse',
     options: { emailRedirectTo: window.location.origin },
   })
+})
+
+test('sign-up reports an immediate session when confirmation is disabled', async () => {
+  mocks.client.auth.signUp.mockResolvedValue({ data: { session: freshSession }, error: null })
+  expect(await signUp('player@example.com', 'correct horse')).toBe('signed_in')
+})
+
+test('short passwords and blank emails are rejected before calling Supabase', async () => {
+  await expect(signUp('player@example.com', 'short')).rejects.toThrow('Use at least 8 characters')
+  await expect(signIn('   ', 'correct horse')).rejects.toThrow('Enter an email address')
+  await expect(signIn('player@example.com', '')).rejects.toThrow('Enter your password')
+  await expect(updatePassword('short')).rejects.toThrow('Use at least 8 characters')
+  expect(mocks.client.auth.signUp).not.toHaveBeenCalled()
+  expect(mocks.client.auth.signInWithPassword).not.toHaveBeenCalled()
+  expect(mocks.client.auth.updateUser).not.toHaveBeenCalled()
+})
+
+test('sign-in maps known Supabase errors and hides everything else', async () => {
+  const cases: [string, string][] = [
+    ['invalid_credentials', 'Incorrect email or password'],
+    ['email_not_confirmed', 'Confirm your email first. Check your inbox for the link.'],
+    ['over_request_rate_limit', 'Too many attempts. Try again in a few minutes.'],
+    ['something_internal', 'Unable to sign in'],
+  ]
+  for (const [code, message] of cases) {
+    mocks.client.auth.signInWithPassword.mockResolvedValueOnce({ data: {}, error: { code, message: 'provider detail' } })
+    await expect(signIn('player@example.com', 'correct horse')).rejects.toThrow(new RegExp(`^${message.replace(/[.]/g, '\\.')}$`))
+  }
+  expect(mocks.client.auth.signInWithPassword).toHaveBeenLastCalledWith({ email: 'player@example.com', password: 'correct horse' })
+})
+
+test('password reset emails return to this site and hide rate-limit details', async () => {
+  await requestPasswordReset(' Player@Example.com ')
+  expect(mocks.client.auth.resetPasswordForEmail).toHaveBeenCalledWith('player@example.com', { redirectTo: window.location.origin })
+
+  mocks.client.auth.resetPasswordForEmail.mockResolvedValueOnce({ data: {}, error: { code: 'over_email_send_rate_limit' } })
+  await expect(requestPasswordReset('player@example.com')).rejects.toThrow('Too many emails were sent recently')
+})
+
+test('updating the password maps reused-password errors', async () => {
+  await updatePassword('a brand new password')
+  expect(mocks.client.auth.updateUser).toHaveBeenCalledWith({ password: 'a brand new password' })
+
+  mocks.client.auth.updateUser.mockResolvedValueOnce({ data: {}, error: { code: 'same_password' } })
+  await expect(updatePassword('a brand new password')).rejects.toThrow('Choose a password different from your current one')
+})
+
+test('password-recovery events reach the session observer', async () => {
+  const callback = vi.fn()
+  let onChange: (event: string, session: typeof freshSession | null) => void = () => {}
+  mocks.client.auth.onAuthStateChange.mockImplementation((handler) => {
+    onChange = handler
+    return { data: { subscription: { unsubscribe: vi.fn() } } }
+  })
+  const stop = observeSession(callback)
+  await vi.waitFor(() => expect(callback).toHaveBeenCalled())
+
+  onChange('PASSWORD_RECOVERY', freshSession)
+
+  expect(callback).toHaveBeenLastCalledWith(freshSession, 'PASSWORD_RECOVERY')
+  stop()
 })
 
 test('recovers the current session then observes changes until unsubscribed', async () => {
@@ -55,7 +125,7 @@ test('recovers the current session then observes changes until unsubscribed', as
   const stop = observeSession(callback)
   await vi.waitFor(() => expect(callback).toHaveBeenCalledWith(freshSession))
   onChange('SIGNED_OUT', null)
-  expect(callback).toHaveBeenLastCalledWith(null)
+  expect(callback).toHaveBeenLastCalledWith(null, 'SIGNED_OUT')
   stop()
 
   expect(unsubscribe).toHaveBeenCalledTimes(1)
@@ -142,9 +212,13 @@ test('does not expose malformed request input in an authorization error', async 
 })
 
 test('keeps provider errors and secret-shaped details out of auth failures', async () => {
-  mocks.client.auth.signInWithOtp.mockResolvedValue({
-    error: new Error('sb_secret_private postgresql://private-user:private-password@example.invalid/chess'),
-  })
+  const leaky = Object.assign(
+    new Error('sb_secret_private postgresql://private-user:private-password@example.invalid/chess'),
+    { code: 'unexpected_failure' },
+  )
+  mocks.client.auth.signInWithPassword.mockResolvedValue({ data: {}, error: leaky })
+  mocks.client.auth.signUp.mockResolvedValue({ data: {}, error: leaky })
 
-  await expect(requestMagicLink('player@example.com')).rejects.toThrow('Unable to send sign-in link')
+  await expect(signIn('player@example.com', 'correct horse')).rejects.toThrow(/^Unable to sign in$/)
+  await expect(signUp('player@example.com', 'correct horse')).rejects.toThrow(/^Unable to create your account$/)
 })

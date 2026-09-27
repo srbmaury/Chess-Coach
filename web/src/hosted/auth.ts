@@ -1,4 +1,4 @@
-import type { Session, SupabaseClient } from '@supabase/supabase-js'
+import type { AuthChangeEvent, Session, SupabaseClient } from '@supabase/supabase-js'
 
 import { createHostedClient, getHostedConfig } from './config'
 
@@ -8,23 +8,96 @@ async function client(): Promise<SupabaseClient> {
   return createHostedClient(await getHostedConfig())
 }
 
-export async function requestMagicLink(email: string): Promise<void> {
-  const normalizedEmail = email.trim().toLowerCase()
-  if (!normalizedEmail) throw new Error('Enter an email address')
+export const MIN_PASSWORD_LENGTH = 8
+
+export type AuthEvent = AuthChangeEvent | undefined
+export type SignUpResult = 'signed_in' | 'confirm_email'
+
+// Supabase error codes mapped to messages that are safe to show. Anything else
+// becomes the caller's generic fallback so provider details never reach the page.
+const MESSAGES: Record<string, string> = {
+  invalid_credentials: 'Incorrect email or password',
+  email_not_confirmed: 'Confirm your email first. Check your inbox for the link.',
+  weak_password: `Choose a stronger password (at least ${MIN_PASSWORD_LENGTH} characters)`,
+  same_password: 'Choose a password different from your current one',
+  over_email_send_rate_limit: 'Too many emails were sent recently. Try again in a few minutes.',
+  over_request_rate_limit: 'Too many attempts. Try again in a few minutes.',
+}
+
+class AuthError extends Error {}
+
+function authError(error: unknown, fallback: string): Error {
+  if (error instanceof AuthError) return error
+  const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : ''
+  return new Error(MESSAGES[code] ?? fallback)
+}
+
+function normalizeEmail(email: string): string {
+  const normalized = email.trim().toLowerCase()
+  if (!normalized) throw new AuthError('Enter an email address')
+  return normalized
+}
+
+function checkPassword(password: string): string {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    throw new AuthError(`Use at least ${MIN_PASSWORD_LENGTH} characters`)
+  }
+  return password
+}
+
+// Links in auth emails return to this site. The origin must be listed under
+// Supabase Auth -> URL Configuration -> Redirect URLs.
+const returnUrl = () => window.location.origin
+
+export async function signUp(email: string, password: string): Promise<SignUpResult> {
   try {
-    // Send the link back to this site; Supabase otherwise falls back to its Site URL.
-    // The origin must be listed under Auth -> URL Configuration -> Redirect URLs.
-    const { error } = await (await client()).auth.signInWithOtp({
-      email: normalizedEmail,
-      options: { emailRedirectTo: window.location.origin },
+    const { data, error } = await (await client()).auth.signUp({
+      email: normalizeEmail(email),
+      password: checkPassword(password),
+      options: { emailRedirectTo: returnUrl() },
     })
     if (error) throw error
-  } catch {
-    throw new Error('Unable to send sign-in link')
+    // With email confirmation on (the default) no session exists until the link is
+    // opened. An already-registered address gets the same answer, so sign-up never
+    // reveals which emails have accounts.
+    return data.session ? 'signed_in' : 'confirm_email'
+  } catch (error) {
+    throw authError(error, 'Unable to create your account')
   }
 }
 
-export function observeSession(callback: (session: Session | null) => void): Unsubscribe {
+export async function signIn(email: string, password: string): Promise<void> {
+  try {
+    if (!password) throw new AuthError('Enter your password')
+    const { error } = await (await client()).auth.signInWithPassword({ email: normalizeEmail(email), password })
+    if (error) throw error
+  } catch (error) {
+    throw authError(error, 'Unable to sign in')
+  }
+}
+
+export async function requestPasswordReset(email: string): Promise<void> {
+  try {
+    const { error } = await (await client()).auth.resetPasswordForEmail(normalizeEmail(email), {
+      redirectTo: returnUrl(),
+    })
+    if (error) throw error
+  } catch (error) {
+    throw authError(error, 'Unable to send a reset link')
+  }
+}
+
+/** Set a new password for the signed-in user (e.g. after opening a reset link). */
+export async function updatePassword(password: string): Promise<void> {
+  try {
+    const { error } = await (await client()).auth.updateUser({ password: checkPassword(password) })
+    if (error) throw error
+  } catch (error) {
+    throw authError(error, 'Unable to update your password')
+  }
+}
+
+export function observeSession(callback: (session: Session | null, event?: AuthEvent) => void): Unsubscribe {
   let stopped = false
   let unsubscribe: Unsubscribe | undefined
   void (async () => {
@@ -36,7 +109,7 @@ export function observeSession(callback: (session: Session | null) => void): Uns
       const result = auth.onAuthStateChange((event, session) => {
         latestEvent = event
         latestSession = session
-        if (!stopped) callback(session)
+        if (!stopped) callback(session, event)
       })
       unsubscribe = () => result.data.subscription.unsubscribe()
       if (stopped) {
