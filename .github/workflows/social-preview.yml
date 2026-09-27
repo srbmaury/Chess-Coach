@@ -1,0 +1,36 @@
+name: Generate social preview
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/social-preview-source.svg
+      - .github/workflows/social-preview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SVG renderer
+        run: sudo apt-get update && sudo apt-get install -y librsvg2-bin
+
+      - name: Render 1200x630 preview
+        run: rsvg-convert -w 1200 -h 630 web/social-preview-source.svg -o web/public/social-preview.png
+
+      - name: Commit generated preview
+        run: |
+          if git diff --quiet -- web/public/social-preview.png; then
+            echo "Preview already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/public/social-preview.png
+          git commit -m "chore: regenerate social preview"
+          git push
