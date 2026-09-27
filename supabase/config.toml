@@ -1,0 +1,14 @@
+# Supabase CLI settings for deploying Edge Functions only. Auth settings (Site URL,
+# redirect URLs, the Send Email Hook, rate limits) live in the hosted project's
+# dashboard; they are deliberately absent so `supabase config push` cannot
+# overwrite them. See docs/auth-email-runbook.md.
+project_id = "chess-ml-coach"
+
+# Supabase Auth calls this function through the Send Email Hook. It does not carry
+# a user JWT, so platform JWT verification is off; the function instead rejects
+# every request without a valid Standard Webhooks signature.
+[functions.send-email]
+enabled = true
+verify_jwt = false
+import_map = "./functions/send-email/import_map.json"
+entrypoint = "./functions/send-email/index.ts"

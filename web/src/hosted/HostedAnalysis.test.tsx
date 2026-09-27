@@ -59,6 +59,7 @@ function setup(options: {
   supported?: boolean
   recommended?: boolean
   analysisEnabled?: boolean
+  authEvent?: string
 } = {}) {
   const coordinator = new FakeCoordinator()
   const api = {
@@ -88,8 +89,16 @@ function setup(options: {
     'memory://model_summary': { status: 'insufficient_data', reason: 'At least 3 games are required' },
   }
   const services: HostedServices = {
-    observeSession: (callback) => { callback(options.session === undefined ? SESSION as never : options.session as never); return () => undefined },
-    requestMagicLink: vi.fn(async () => undefined),
+    observeSession: (callback) => {
+      callback(options.session === undefined ? SESSION as never : options.session as never, options.authEvent as never)
+      return () => undefined
+    },
+    signIn: vi.fn(async (_email: string, password: string) => {
+      if (password === 'wrong password') throw new Error('Incorrect email or password')
+    }),
+    signUp: vi.fn(async () => 'confirm_email' as const),
+    requestPasswordReset: vi.fn(async () => undefined),
+    updatePassword: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
     capabilities: async () => ({
       supported: options.supported ?? true, recommended: options.recommended ?? true,
@@ -104,13 +113,69 @@ function setup(options: {
   return { api, services, coordinator }
 }
 
-test('signed-out visitors get a magic-link form', async () => {
-  const { services } = setup({ session: null })
-  fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'Player@Example.test' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Email me a link' }))
+function fill(label: string, value: string) {
+  fireEvent.change(screen.getByLabelText(label), { target: { value } })
+}
 
-  expect(await screen.findByText('Check your email for a sign-in link.')).toBeTruthy()
-  expect(services.requestMagicLink).toHaveBeenCalledWith('Player@Example.test')
+test('signed-out visitors sign in with email and password', async () => {
+  const { services } = setup({ session: null })
+  fill('Email', 'Player@Example.test')
+  fill('Password', 'correct horse battery')
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+  await waitFor(() => expect(services.signIn).toHaveBeenCalledWith('Player@Example.test', 'correct horse battery'))
+})
+
+test('a wrong password shows a clear error', async () => {
+  setup({ session: null })
+  fill('Email', 'player@example.test')
+  fill('Password', 'wrong password')
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+  expect(await screen.findByText('Incorrect email or password')).toBeTruthy()
+})
+
+test('new visitors create an account and are asked to confirm their email', async () => {
+  const { services } = setup({ session: null })
+  fireEvent.click(screen.getByRole('button', { name: 'Create an account' }))
+  fill('Email', 'new@example.test')
+  fill('Password', 'correct horse battery')
+  expect((screen.getByLabelText('Password') as HTMLInputElement).autocomplete).toBe('new-password')
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+  expect(await screen.findByText('Check your email to confirm your account, then sign in.')).toBeTruthy()
+  expect(services.signUp).toHaveBeenCalledWith('new@example.test', 'correct horse battery')
+})
+
+test('forgot password sends a reset link without revealing whether the account exists', async () => {
+  const { services } = setup({ session: null })
+  fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }))
+  expect(screen.queryByLabelText('Password')).toBeNull()
+  fill('Email', 'someone@example.test')
+  fireEvent.click(screen.getByRole('button', { name: 'Email me a reset link' }))
+
+  expect(await screen.findByText('If an account exists for that email, a reset link is on its way.')).toBeTruthy()
+  expect(services.requestPasswordReset).toHaveBeenCalledWith('someone@example.test')
+  fireEvent.click(screen.getByRole('button', { name: 'Back to sign in' }))
+  expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy()
+})
+
+test('opening a reset link asks for a new password before showing the workspace', async () => {
+  const { services } = setup({ authEvent: 'PASSWORD_RECOVERY' })
+  expect(screen.getByRole('heading', { name: 'Choose a new password' })).toBeTruthy()
+  expect(screen.queryByRole('heading', { name: 'MagnusCarlsen' })).toBeNull()
+
+  fill('New password', 'a brand new password')
+  fill('Confirm new password', 'a different password')
+  fireEvent.click(screen.getByRole('button', { name: 'Save password' }))
+  expect(await screen.findByText('The passwords do not match')).toBeTruthy()
+  expect(services.updatePassword).not.toHaveBeenCalled()
+
+  fill('Confirm new password', 'a brand new password')
+  fireEvent.click(screen.getByRole('button', { name: 'Save password' }))
+
+  await waitFor(() => expect(services.updatePassword).toHaveBeenCalledWith('a brand new password'))
+  expect(await screen.findByRole('heading', { name: 'MagnusCarlsen' })).toBeTruthy()
 })
 
 test('hosted mode has no Pipeline page and offers sign out', async () => {

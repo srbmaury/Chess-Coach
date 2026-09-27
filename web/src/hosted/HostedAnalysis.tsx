@@ -1,4 +1,4 @@
-// The hosted (multi-user) experience: magic-link sign-in, Chess.com player profiles,
+// The hosted (multi-user) experience: email/password sign-in, Chess.com player profiles,
 // shared browser-computed analysis with live progress, and ready results. Hosted mode
 // never shows the local Pipeline page; computation happens in the browser.
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
@@ -8,6 +8,7 @@ import { Chessboard } from 'react-chessboard'
 import type { ModelSummary } from '../analysis/model'
 import type { PuzzleSeed } from '../analysis/puzzles'
 import type { HostedApi } from './api'
+import { MIN_PASSWORD_LENGTH } from './auth'
 import type { CoordinatorSnapshot } from './coordinator'
 import type { Capabilities } from './device'
 import { useClickToMove } from '../useClickToMove'
@@ -22,8 +23,15 @@ export default function HostedAnalysis({ config, services: injected }: Props) {
   const services = useMemo(() => injected ?? createDefaultServices(config), [injected, config])
   const [session, setSession] = useState<Session | null | undefined>(undefined)
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null)
+  // Set while the user arrives from a password-reset email: they are signed in, but
+  // must choose a new password before continuing.
+  const [recovering, setRecovering] = useState(false)
 
-  useEffect(() => services.observeSession(setSession), [services])
+  useEffect(() => services.observeSession((next, event) => {
+    setSession(next)
+    if (event === 'PASSWORD_RECOVERY') setRecovering(true)
+    if (!next) setRecovering(false)
+  }), [services])
   useEffect(() => {
     let active = true
     void services.capabilities().then((value) => { if (active) setCapabilities(value) })
@@ -41,24 +49,51 @@ export default function HostedAnalysis({ config, services: injected }: Props) {
     <main className="hosted-main">
       {session === undefined && <p className="muted">Loading…</p>}
       {session === null && <SignIn services={services} />}
-      {session && <Workspace session={session} services={services} capabilities={capabilities} />}
+      {session && recovering && <NewPassword services={services} onDone={() => setRecovering(false)} />}
+      {session && !recovering && <Workspace session={session} services={services} capabilities={capabilities} />}
     </main>
   </div>
 }
 
+type SignInMode = 'sign_in' | 'sign_up' | 'forgot'
+
+const SIGN_IN_COPY: Record<SignInMode, { kicker: string; title: string; submit: string; busy: string }> = {
+  sign_in: { kicker: 'SIGN IN', title: 'Train on your own games', submit: 'Sign in', busy: 'Signing in…' },
+  sign_up: { kicker: 'CREATE ACCOUNT', title: 'Train on your own games', submit: 'Create account', busy: 'Creating…' },
+  forgot: { kicker: 'RESET PASSWORD', title: 'Forgot your password?', submit: 'Email me a reset link', busy: 'Sending…' },
+}
+
 function SignIn({ services }: { services: HostedServices }) {
+  const [mode, setMode] = useState<SignInMode>('sign_in')
   const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(false)
+  const [password, setPassword] = useState('')
+  const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const copy = SIGN_IN_COPY[mode]
+
+  function switchTo(next: SignInMode) {
+    setMode(next)
+    setError('')
+    setNotice('')
+    setPassword('')
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     setBusy(true)
     setError('')
+    setNotice('')
     try {
-      await services.requestMagicLink(email)
-      setSent(true)
+      if (mode === 'sign_in') {
+        await services.signIn(email, password)
+      } else if (mode === 'sign_up') {
+        const result = await services.signUp(email, password)
+        if (result === 'confirm_email') setNotice('Check your email to confirm your account, then sign in.')
+      } else {
+        await services.requestPasswordReset(email)
+        setNotice('If an account exists for that email, a reset link is on its way.')
+      }
     } catch (caught) {
       setError((caught as Error).message)
     } finally {
@@ -67,16 +102,75 @@ function SignIn({ services }: { services: HostedServices }) {
   }
 
   return <section className="panel hosted-narrow">
-    <p className="kicker">SIGN IN</p>
-    <h1>Train on your own games</h1>
-    <p className="muted">We email you a one-time sign-in link. No password needed.</p>
-    {sent
-      ? <p role="status">Check your email for a sign-in link.</p>
-      : <form onSubmit={submit} className="hosted-inline-form">
-        <input aria-label="Email address" type="email" autoComplete="email" value={email}
+    <p className="kicker">{copy.kicker}</p>
+    <h1>{copy.title}</h1>
+    {mode === 'forgot' && <p className="muted">We'll email you a link to choose a new password.</p>}
+    <form onSubmit={submit} className="hosted-auth-form">
+      <label>Email
+        <input type="email" autoComplete="email" value={email} required
           onChange={(event) => setEmail(event.target.value)} disabled={busy} />
-        <button type="submit" disabled={busy || !email.trim()}>{busy ? 'Sending…' : 'Email me a link'}</button>
-      </form>}
+      </label>
+      {mode !== 'forgot' && <label>Password
+        <input type="password" value={password} required
+          autoComplete={mode === 'sign_up' ? 'new-password' : 'current-password'}
+          minLength={mode === 'sign_up' ? MIN_PASSWORD_LENGTH : undefined}
+          onChange={(event) => setPassword(event.target.value)} disabled={busy} />
+      </label>}
+      {mode === 'sign_up' && <p className="muted hosted-small">At least {MIN_PASSWORD_LENGTH} characters.</p>}
+      <button type="submit" disabled={busy || !email.trim() || (mode !== 'forgot' && !password)}>
+        {busy ? copy.busy : copy.submit}
+      </button>
+    </form>
+    {notice && <p role="status">{notice}</p>}
+    {error && <p className="hosted-error" role="alert">{error}</p>}
+    <div className="hosted-auth-links">
+      {mode === 'sign_in' && <>
+        <button type="button" className="link" onClick={() => switchTo('forgot')}>Forgot password?</button>
+        <button type="button" className="link" onClick={() => switchTo('sign_up')}>Create an account</button>
+      </>}
+      {mode !== 'sign_in' && <button type="button" className="link" onClick={() => switchTo('sign_in')}>Back to sign in</button>}
+    </div>
+  </section>
+}
+
+function NewPassword({ services, onDone }: { services: HostedServices; onDone: () => void }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (password !== confirm) {
+      setError('The passwords do not match')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await services.updatePassword(password)
+      onDone()
+    } catch (caught) {
+      setError((caught as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <section className="panel hosted-narrow">
+    <p className="kicker">RESET PASSWORD</p>
+    <h1>Choose a new password</h1>
+    <form onSubmit={submit} className="hosted-auth-form">
+      <label>New password
+        <input type="password" autoComplete="new-password" minLength={MIN_PASSWORD_LENGTH} required value={password}
+          onChange={(event) => setPassword(event.target.value)} disabled={busy} />
+      </label>
+      <label>Confirm new password
+        <input type="password" autoComplete="new-password" required value={confirm}
+          onChange={(event) => setConfirm(event.target.value)} disabled={busy} />
+      </label>
+      <button type="submit" disabled={busy || !password || !confirm}>{busy ? 'Saving…' : 'Save password'}</button>
+    </form>
     {error && <p className="hosted-error" role="alert">{error}</p>}
   </section>
 }
