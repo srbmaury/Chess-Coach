@@ -59,6 +59,31 @@ def test_served_app_serves_root_level_build_files_before_spa_fallback(tmp_path: 
     assert "Chess UI" in client.get("/../outside.txt").text
 
 
+def test_served_app_serves_top_level_build_files_as_themselves(tmp_path: Path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html><body>Chess UI</body></html>", encoding="utf-8")
+    (dist / "social-preview.png").write_bytes(b"\x89PNG preview")
+    (dist / "favicon.ico").write_bytes(b"\x00\x00\x01\x00icon")
+    (tmp_path / "secret.txt").write_text("outside the build", encoding="utf-8")
+
+    client = TestClient(create_served_app(
+        Settings(data_dir=tmp_path / "data", model_dir=tmp_path / "models"),
+        static_dir=dist,
+    ))
+
+    # Link-preview crawlers (WhatsApp, X) must get the image, not the app page.
+    preview = client.get("/social-preview.png")
+    assert preview.headers["content-type"] == "image/png"
+    assert preview.content == b"\x89PNG preview"
+    assert client.head("/social-preview.png").status_code == 200
+    assert client.get("/favicon.ico").content == b"\x00\x00\x01\x00icon"
+    # Unknown files and client-side routes still get the app; nothing outside the build.
+    assert "Chess UI" in client.get("/missing.png").text
+    assert "Chess UI" in client.get("/pipeline").text
+    assert "outside the build" not in client.get("/..%2Fsecret.txt").text
+
+
 def test_served_app_requires_built_frontend(tmp_path: Path):
     try:
         create_served_app(static_dir=tmp_path / "missing")
