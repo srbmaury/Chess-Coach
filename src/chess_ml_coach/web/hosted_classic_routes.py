@@ -26,10 +26,9 @@ from .hosted_analysis_routes import (
     MAX_DECOMPRESSED_BYTES,
     MAX_UPLOAD_BYTES,
     HostedAnalysisServices,
-    HostedApiError,
     _services,
-    guarded,
 )
+from .hosted_errors import HostedApiError, translate_hosted_errors
 from .report_page import render_report_page
 from .schemas import (
     AdaptiveProgressSummary,
@@ -148,14 +147,14 @@ def _profiles_payload(services: HostedAnalysisServices, account_id: str) -> dict
 @router.get("/api/profiles")
 def list_profiles(request: Request) -> dict[str, object]:
     services, account_id = _context(request)
-    with guarded():
+    with translate_hosted_errors():
         return _profiles_payload(services, account_id)
 
 
 @router.post("/api/profiles", status_code=201)
 def create_profile(request: Request, body: ProfileCreateRequest) -> dict[str, object]:
     services, account_id = _context(request)
-    with guarded():
+    with translate_hosted_errors():
         profile = services.profiles.claim(account_id, body.username)
         if body.activate or services.practice.active_player(account_id) is None:
             services.practice.set_active(account_id, profile.player.id)
@@ -171,7 +170,7 @@ def create_profile(request: Request, body: ProfileCreateRequest) -> dict[str, ob
 def activate_profile(request: Request, username: str) -> dict[str, object]:
     services, account_id = _context(request)
     wanted = username.strip().lower()
-    with guarded():
+    with translate_hosted_errors():
         profile = next(
             (item for item in services.profiles.list(account_id)
              if item.player.canonical_username == wanted),
@@ -223,7 +222,7 @@ def report(request: Request) -> HTMLResponse:
     key = services.practice.artifact_key(player, "report")
     if key is None:
         raise HostedApiError(404, "no_report", "Report not found. Run the analysis from the Pipeline page.")
-    with guarded():
+    with translate_hosted_errors():
         stored = services.storage.get(key, max_bytes=MAX_UPLOAD_BYTES)
     document = json.loads(bounded_gunzip(stored.body, MAX_DECOMPRESSED_BYTES))
     return HTMLResponse(render_report_page(str(document["markdown"])))
