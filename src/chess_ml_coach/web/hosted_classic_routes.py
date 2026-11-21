@@ -18,7 +18,7 @@ from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..hosted.checkpoints import bounded_gunzip
+from ..hosted.checkpoint_validation import bounded_gunzip
 from ..hosted.practice import ActivePlayer, NoActivePlayerError, PracticeError, PuzzleNotFoundError
 from ..move_quality import display_loss_pawns, stored_quality_reason
 from .auth import require_account
