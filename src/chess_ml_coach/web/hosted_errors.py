@@ -4,12 +4,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from ..chesscom import ChessComError, ChessComNotFoundError
-from ..hosted.checkpoints import (
-    CheckpointRejectedError,
-    IncompleteJobError,
-    SequenceConflictError,
-    UploadTooLargeError,
-)
+from ..hosted.checkpoint_validation import CheckpointRejectedError, UploadTooLargeError
+from ..hosted.checkpoints import IncompleteJobError, SequenceConflictError
 from ..hosted.jobs import JobError, JobNotFoundError
 from ..hosted.leases import (
     InvalidDeviceError,

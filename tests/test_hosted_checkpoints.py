@@ -4,7 +4,7 @@ import zlib
 import pytest
 from hosted_factories import DEFAULT_GAMES, analysis_rows
 
-from chess_ml_coach.hosted.checkpoints import (
+from chess_ml_coach.hosted.checkpoint_validation import (
     CheckpointRejectedError,
     UploadTooLargeError,
     bounded_gunzip,
