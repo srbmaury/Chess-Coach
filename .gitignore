@@ -17,3 +17,6 @@ build/
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
+
+# Supabase CLI local state (linked project, cached versions)
+supabase/.temp/
