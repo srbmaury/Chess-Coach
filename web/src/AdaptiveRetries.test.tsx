@@ -95,3 +95,33 @@ test('rejected adaptive moves keep the same board retryable without revealing th
   expect(document.body.textContent).not.toContain('Best move:')
   expect(document.body.textContent).not.toContain('d2d4')
 })
+
+test('adaptive start can retry the current puzzle after a transient failure', async () => {
+  window.history.pushState({}, '', '/practice')
+  let starts = 0
+  let nextRequests = 0
+  vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+    const url = String(input)
+    if (url === '/api/practice/next') {
+      nextRequests += 1
+      return response({ puzzle })
+    }
+    if (url === '/api/practice/p1/adaptive/start') {
+      starts += 1
+      if (starts === 1) throw new Error('Temporary connection failure')
+      return response(activeSession)
+    }
+    throw new Error(`Unexpected fetch: ${url}`)
+  }))
+
+  render(<LegacyApp />)
+  const retry = await screen.findByRole('button', { name: 'Retry' })
+  expect(screen.getByText('Temporary connection failure')).toBeTruthy()
+  expect(screen.getByTestId('board-dragging').textContent).toBe('false')
+
+  fireEvent.click(retry)
+  await waitFor(() => expect(screen.getByTestId('board-dragging').textContent).toBe('true'))
+  expect(screen.queryByText('Temporary connection failure')).toBeNull()
+  expect(nextRequests).toBe(1)
+  expect(starts).toBe(2)
+})

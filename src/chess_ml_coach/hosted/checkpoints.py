@@ -17,6 +17,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
+from hmac import compare_digest
 
 import chess
 from psycopg.types.json import Jsonb
@@ -24,7 +25,7 @@ from psycopg.types.json import Jsonb
 from .analysis_config import ARTIFACT_TYPES, dependency_hash
 from .database import Database
 from .jobs import clear_lease
-from .leases import verify_lease
+from .leases import LeaseLostError, token_digest, verify_lease
 from .manifests import GameManifest, ManifestGame, parse_manifest_bytes
 from .practice import PracticeRepository
 from .storage import ArtifactStorage, ObjectNotFoundError, SignedUpload
@@ -468,21 +469,55 @@ class CheckpointService:
             raise CheckpointRejectedError("No upload was granted for this object")
         return row
 
+    @staticmethod
+    def _find_finalized_checkpoint(connection, job_id: str, sequence: int):
+        return connection.execute(
+            f"SELECT {_CHECKPOINT_COLUMNS} FROM analysis_checkpoints "
+            "WHERE job_id = %s AND sequence = %s",
+            (job_id, sequence),
+        ).fetchone()
+
+    def _verify_checkpoint_finalization(
+        self, connection, job_id: str, account_id: str, device_id: str, token: str,
+        sequence: int, content_hash: str,
+    ):
+        try:
+            lease = verify_lease(connection, job_id, account_id, device_id, token)
+        except LeaseLostError:
+            # The final commit clears the lease. Only the original uploader with the
+            # consumed grant's token may recover the receipt for that exact commit.
+            grant = connection.execute(
+                "SELECT g.lease_token_digest FROM analysis_checkpoints c "
+                "JOIN analysis_jobs j ON j.id = c.job_id "
+                "JOIN analysis_upload_grants g ON g.storage_key = c.storage_key "
+                "WHERE j.id = %s AND j.status = 'succeeded' AND j.checkpoint_sequence = %s "
+                "AND c.sequence = j.checkpoint_sequence AND c.content_hash = %s "
+                "AND c.uploader_account_id = %s AND c.uploader_device_id = %s "
+                "AND g.consumed_at IS NOT NULL",
+                (job_id, sequence, content_hash, account_id, device_id),
+            ).fetchone()
+            if grant is None or not grant[0] or not token or not compare_digest(
+                grant[0], token_digest(token)
+            ):
+                raise
+            return None, self._find_finalized_checkpoint(connection, job_id, sequence)
+
+        existing = self._find_finalized_checkpoint(connection, job_id, sequence)
+        if existing is not None and existing[4] != content_hash:
+            raise SequenceConflictError("That checkpoint sequence is already recorded")
+        return lease, existing
+
     def finalize_checkpoint(
         self, job_id: str, account_id: str, device_id: str, token: str, *,
         sequence: int, content_hash: str,
     ) -> Checkpoint:
         with self._database.transaction() as connection:
-            lease = verify_lease(connection, job_id, account_id, device_id, token)
-            existing = connection.execute(
-                f"SELECT {_CHECKPOINT_COLUMNS} FROM analysis_checkpoints "
-                "WHERE job_id = %s AND sequence = %s",
-                (job_id, sequence),
-            ).fetchone()
-            if existing:
-                if existing[4] != content_hash:
-                    raise SequenceConflictError("That checkpoint sequence is already recorded")
+            lease, existing = self._verify_checkpoint_finalization(
+                connection, job_id, account_id, device_id, token, sequence, content_hash
+            )
+            if existing is not None:
                 return _checkpoint(existing)
+            assert lease is not None
             if sequence != lease.checkpoint_sequence + 1:
                 raise SequenceConflictError("Unexpected checkpoint sequence")
             key = checkpoint_storage_key(job_id, lease.analysis_config_hash, sequence, content_hash)
@@ -499,7 +534,12 @@ class CheckpointService:
             config_hash=lease.analysis_config_hash, engine_hash=lease.engine_build_hash,
         )
         with self._database.transaction() as connection:
-            current = verify_lease(connection, job_id, account_id, device_id, token)
+            current, existing = self._verify_checkpoint_finalization(
+                connection, job_id, account_id, device_id, token, sequence, content_hash
+            )
+            if existing is not None:
+                return _checkpoint(existing)
+            assert current is not None
             if current.checkpoint_sequence + 1 != sequence or current.completed_work != first:
                 raise SequenceConflictError("Checkpoint cursor moved while validating")
             row = connection.execute(
@@ -549,8 +589,9 @@ class CheckpointService:
                     (job_id,),
                 )
             connection.execute(
-                "UPDATE analysis_upload_grants SET consumed_at = now() WHERE storage_key = %s",
-                (key,),
+                "UPDATE analysis_upload_grants SET consumed_at = now(), lease_token_digest = %s "
+                "WHERE storage_key = %s",
+                (current.token_digest, key),
             )
         return _checkpoint(row)
 

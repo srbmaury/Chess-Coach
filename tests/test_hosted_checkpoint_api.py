@@ -167,6 +167,30 @@ def test_last_checkpoint_finishes_the_job_and_records_every_game(worker, pg):
     assert again["status"] == "succeeded" and again["total_units"] == 0
 
 
+def test_final_checkpoint_can_be_replayed_after_the_lease_is_cleared(worker):
+    first, job, games = worker["first"], worker["job"], worker["games"]
+    initial = checkpoint_payload(job, games, 1, 0, 1, ENGINE)
+    assert first.checkpoint(job["id"], 1, initial).status_code == 200
+    final = checkpoint_payload(job, games, 2, 2, 2, ENGINE)
+    completed = first.checkpoint(job["id"], 2, final)
+    assert completed.status_code == 200
+
+    path = f"/api/hosted/jobs/{job['id']}/checkpoints/finalize"
+    replay = first.lease_body(sequence=2, content_hash=sha256(gzip_json(final)).hexdigest())
+    repeated = first.post(path, replay)
+    assert repeated.status_code == 200
+    assert repeated.json() == completed.json()
+
+    for changed in (
+        {"lease_token": "x" * 43},
+        {"device_id": "another-browser-device"},
+        {"content_hash": "0" * 64},
+    ):
+        denied = first.post(path, {**replay, **changed})
+        assert denied.status_code == 409
+        assert denied.json()["code"] == "lease_lost"
+
+
 def test_results_can_be_built_from_partial_analysis(worker):
     first, job, games = worker["first"], worker["job"], worker["games"]
     first.checkpoint(job["id"], 1, checkpoint_payload(job, games, 1, 0, 1, ENGINE))
