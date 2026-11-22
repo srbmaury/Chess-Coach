@@ -58,19 +58,42 @@ def test_a_different_game_set_creates_a_separate_job(pg):
     assert create_job(pg, account, player).id != create_job(pg, account, player, manifest_hash="n" * 64).id
 
 
-def test_completed_results_are_reused_without_a_new_job(pg):
-    first_account, second_account = new_account(pg), new_account(pg)
-    player = entitled_player(pg, first_account)
-    job = create_job(pg, first_account, player)
+def _record_analyzed(pg, job_id: str, player_id: str, game_ids: list[str]) -> None:
     with pg.transaction() as connection:
-        connection.execute("UPDATE analysis_jobs SET status = 'succeeded', finished_at = now() "
-                           "WHERE id = %s", (job.id,))
+        config_id = connection.execute(
+            "SELECT analysis_config_id FROM analysis_jobs WHERE id = %s", (job_id,)
+        ).fetchone()[0]
+        checkpoint = connection.execute(
+            "INSERT INTO analysis_checkpoints (job_id, sequence, storage_bucket, storage_key, "
+            "byte_size, content_hash, result_count, first_unit, last_unit, first_game_id, "
+            "last_game_id, analysis_config_hash, engine_build_hash, uploader_device_id) "
+            "VALUES (%s, 1, 'b', %s, 1, %s, 1, 0, 0, 'g', 'g', 'c', 'e', 'd') RETURNING id",
+            (job_id, f"key-{job_id}", "a" * 64),
+        ).fetchone()[0]
+        for game_id in game_ids:
+            connection.execute(
+                "INSERT INTO analyzed_games (player_id, analysis_config_id, game_id, checkpoint_id, "
+                "move_count) VALUES (%s, %s, %s, %s, 20)",
+                (player_id, config_id, game_id, checkpoint),
+            )
 
-    reused = create_job(pg, second_account, player)
 
-    assert reused.id == job.id
-    assert reused.status == "succeeded"
-    assert reused.subscription_state == "completed"
+def test_analyzed_games_are_never_analyzed_again(pg):
+    account = new_account(pg)
+    player = entitled_player(pg, account)
+    first = create_job(pg, account, player, total_units=4)
+    _record_analyzed(pg, first.id, player, ["game-0", "game-1"])
+
+    # A new sync with two extra games supersedes the unfinished job ...
+    second = create_job(pg, account, player, manifest_hash="n" * 64, total_units=6)
+    assert second.total_work == 4
+    assert JobRepository(pg).unit_game_ids(second.id) == ["game-2", "game-3", "game-4", "game-5"]
+    assert JobRepository(pg).get(first.id).status == "cancelled"
+
+    # ... and a game list that is fully analyzed finishes at once.
+    _record_analyzed(pg, second.id, player, ["game-2", "game-3", "game-4", "game-5"])
+    done = create_job(pg, account, player, manifest_hash="o" * 64, total_units=6)
+    assert (done.status, done.total_work, done.subscription_state) == ("succeeded", 0, "completed")
 
 
 def test_stopping_one_subscriber_does_not_stop_another(pg):

@@ -4,7 +4,7 @@ import zlib
 import pytest
 from hosted_factories import DEFAULT_GAMES, analysis_rows
 
-from chess_ml_coach.hosted.checkpoints import (
+from chess_ml_coach.hosted.checkpoint_validation import (
     CheckpointRejectedError,
     UploadTooLargeError,
     bounded_gunzip,
@@ -32,7 +32,7 @@ def _payload(**overrides):
 
 def _validate(payload, first_unit=0):
     return validate_checkpoint_payload(
-        payload, MANIFEST, job_id="job", sequence=1, first_unit=first_unit,
+        payload, list(MANIFEST.games), job_id="job", sequence=1, first_unit=first_unit,
         config_hash="cfg", engine_hash="eng",
     )
 

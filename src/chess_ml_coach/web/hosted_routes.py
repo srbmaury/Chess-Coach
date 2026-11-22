@@ -26,6 +26,7 @@ def browser_config(request: Request) -> HostedBrowserConfig:
         engine_version="19.0.0",
         config_version="1",
         analysis_config_hash=HostedAnalysisConfig.from_settings(settings).hash,
+        analysis_depth=settings.hosted_analysis_depth,
         lease_seconds=LEASE_SECONDS,
         renew_interval_seconds=RENEW_INTERVAL_SECONDS,
         max_upload_bytes=MAX_UPLOAD_BYTES,

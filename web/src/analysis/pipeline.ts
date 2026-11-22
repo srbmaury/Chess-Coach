@@ -39,23 +39,33 @@ export type DeriveInput = {
   analysisConfigHash: string
 }
 
+/** What a pipeline stage builds: the feature table alone, or some published artifacts. */
+export type DeriveResult = { featureRows: number; artifacts: Partial<DerivedArtifacts> }
+
 export async function deriveArtifacts(input: DeriveInput): Promise<DerivedArtifacts> {
+  return (await deriveSelected(input, ARTIFACT_TYPES)).artifacts as DerivedArtifacts
+}
+
+export async function deriveSelected(input: DeriveInput, only: readonly ArtifactType[]): Promise<DeriveResult> {
   const base = {
     schema_version: ARTIFACT_SCHEMA_VERSION as 1,
     dependency_hash: input.dependencyHash,
     analysis_config_hash: input.analysisConfigHash,
   }
   const features = buildFeatureDataset(input.games, input.analysis)
-  const puzzles = await extractPuzzles(features)
+  const artifacts: Partial<DerivedArtifacts> = {}
+  if (only.includes('puzzles')) {
+    artifacts.puzzles = { ...base, artifact_type: 'puzzles', puzzles: await extractPuzzles(features) }
+  }
+  if (!only.includes('model_summary') && !only.includes('report')) return { featureRows: features.length, artifacts }
   const model = trainLightweightModel(features)
-  const importance = model.status === 'trained'
-    ? model.feature_importance.map(({ feature, importance }) => ({ feature, importance }))
-    : null
-  const report = features.length ? buildCoachingReport(features, input.minGroupSize, importance) : null
-  return {
-    puzzles: { ...base, artifact_type: 'puzzles', puzzles },
-    model_summary: { ...base, ...model, artifact_type: 'model_summary' },
-    report: {
+  if (only.includes('model_summary')) artifacts.model_summary = { ...base, ...model, artifact_type: 'model_summary' }
+  if (only.includes('report')) {
+    const importance = model.status === 'trained'
+      ? model.feature_importance.map(({ feature, importance }) => ({ feature, importance }))
+      : null
+    const report = features.length ? buildCoachingReport(features, input.minGroupSize, importance) : null
+    artifacts.report = {
       ...base,
       artifact_type: 'report',
       markdown: report ? renderMarkdown(report) : '# Chess ML Coach Report\n\nNo analyzed moves yet.\n',
@@ -64,6 +74,7 @@ export async function deriveArtifacts(input: DeriveInput): Promise<DerivedArtifa
       },
       recurring_contexts: report?.recurring_contexts.slice(0, 12) ?? [],
       candidate_positions: report?.candidate_positions ?? [],
-    },
+    }
   }
+  return { featureRows: features.length, artifacts }
 }

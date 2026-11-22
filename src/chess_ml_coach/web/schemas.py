@@ -23,6 +23,7 @@ class HostedBrowserConfig(BaseModel):
     engine_version: str | None = None
     config_version: str | None = None
     analysis_config_hash: str | None = None
+    analysis_depth: int | None = None
     lease_seconds: int | None = None
     renew_interval_seconds: int | None = None
     max_upload_bytes: int | None = None

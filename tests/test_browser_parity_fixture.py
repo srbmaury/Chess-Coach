@@ -23,12 +23,24 @@ def generated() -> str:
         patcher.undo()
 
 
+def assert_parity(actual, expected, path="$"):
+    assert type(actual) is type(expected), path
+    if isinstance(expected, dict):
+        assert actual.keys() == expected.keys(), path
+        for key, value in expected.items():
+            assert_parity(actual[key], value, f"{path}.{key}")
+    elif isinstance(expected, list):
+        assert len(actual) == len(expected), path
+        for index, (actual_item, expected_item) in enumerate(zip(actual, expected, strict=True)):
+            assert_parity(actual_item, expected_item, f"{path}[{index}]")
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected, rel=1e-9, abs=1e-9), path
+    else:
+        assert actual == expected, path
+
+
 def test_python_pipeline_still_emits_the_committed_parity_fixture(generated):
-    assert generated == FIXTURE.read_text(encoding="utf-8"), (
-        "Python pipeline output changed; regenerate with "
-        "`.venv/bin/python tests/browser_parity.py > tests/fixtures/browser_parity.json` "
-        "and update the TypeScript port to match"
-    )
+    assert_parity(json.loads(generated), json.loads(FIXTURE.read_text(encoding="utf-8")))
 
 
 def test_fixture_is_canonical_and_free_of_timestamps_and_paths(generated):

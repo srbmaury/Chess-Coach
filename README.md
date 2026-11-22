@@ -1,114 +1,49 @@
 # Chess ML Coach
 
-Turn Chess.com game history into a personalized training plan.
+Turn mistakes from your Chess.com games into puzzles you can practice and revisit.
 
-**Live demo:** https://chess-ml-coach.onrender.com
+**[Open Chess Coach](https://chess-ml-coach.onrender.com)** · Hosted app requires email sign-in · [Run locally](#quick-start)
 
-Chess ML Coach is a local-first chess improvement tool that combines:
+![Screen recording of the Chess Coach web app](docs/chess-coach-demo.gif)
 
-- **Stockfish** for objective position evaluation, best moves, principal variations, and centipawn loss;
-- **LightGBM** for learning the kinds of positions in which a specific player is historically most likely to make a significant mistake;
-- a **personal puzzle trainer** with adaptive Stockfish-guided continuations generated from that player's own mistakes;
-- **spaced repetition** and persistent mastery/progress tracking;
-- an interactive **FastAPI + React** web UI;
-- engine-grounded **"Why is this best?"** explanations after a puzzle attempt.
+- **Practice your own mistakes.** Play an adaptive continuation or solve a one-move puzzle in Quick mode.
+- **Understand the answer.** Review Stockfish's line and a board-based explanation after an attempt.
+- **Build a practice routine.** Revisit due puzzles with spaced repetition and track progress by opening and motif.
 
-It does not train a chess engine from a player's games and does not replace Stockfish. The personalization layer learns *where a player struggles*; Stockfish remains the chess authority.
+Stockfish evaluates positions and supplies best moves. The local LightGBM model estimates which kinds of positions you tend to mishandle. The hosted browser pipeline uses a lightweight mistake-risk model.
 
-## How it works
+## Quick start
 
-```text
-Chess.com PubAPI
-      |
-      v
-sync -> PGN corpus -> Stockfish analysis -> features -> LightGBM -> coaching report
-                                          |
-                                          v
-                                  personal puzzles
-                                          |
-                                          v
-                              spaced-repetition practice
-                                          |
-                                          v
-                                   progress tracking
-```
-
-Every Chess.com username has an isolated local profile, so multiple players can use the same installation without sharing games, Stockfish caches, models, puzzles, explanations, or review history.
-
-## Requirements
-
-- Python 3.11+
-- Stockfish installed locally for analysis/explanations
-- Internet access for Chess.com sync
-- Node.js 22+ to build the web UI
-
-Chess.com ingestion uses the public, read-only PubAPI.
-
-## Setup
+Install Python 3.11+, Node.js 22+, and Stockfish. You’ll need internet access to import public Chess.com games.
 
 ```bash
 git clone https://github.com/srbmaury/Chess-Coach.git
 cd Chess-Coach
 python -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
-```
-
-On Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Configure Stockfish:
-
-```bash
+python -m pip install -e '.[dev]'
 export STOCKFISH_PATH=/absolute/path/to/stockfish
-```
 
-On Windows PowerShell:
-
-```powershell
-$env:STOCKFISH_PATH = "C:\path\to\stockfish.exe"
-```
-
-You can also pass `--stockfish-path` to `chess-coach analyze`.
-
-## Local web UI
-
-Build the frontend once:
-
-```bash
 cd web
-npm install
+npm ci
 npm run build
 cd ..
-```
-
-Start the application:
-
-```bash
 chess-coach ui
 ```
 
-It binds to `127.0.0.1:8000` by default and opens the browser. To avoid opening a browser automatically, or to bind elsewhere:
+On Windows PowerShell, use `.\.venv\Scripts\Activate.ps1` to activate the environment and `$env:STOCKFISH_PATH = "C:\path\to\stockfish.exe"` to set the engine path.
 
-```bash
-chess-coach ui --no-open
-chess-coach ui --host 0.0.0.0 --port 8080
-```
+1. Open [localhost:8000](http://127.0.0.1:8000) and add your Chess.com username with **Add player**.
+2. In **Pipeline**, run **Sync → Analyze → Features → Puzzles** in order.
+3. Open **Practice** to solve your first due puzzle. Run **Train → Report** in Pipeline when you want a personalized coaching report.
 
-See the [local-only privacy model](#local-only-privacy-model) before binding to a non-localhost `--host`.
+The first Stockfish analysis takes the longest. You can stop it from Pipeline and resume from its saved cache.
 
-The web UI contains:
+## How it works
 
-- **Player controls** — enter a Chess.com username, add another player, or switch between local profiles;
-- **Dashboard** — analyzed moves, due/mastered puzzles, review accuracy, and artifact readiness;
-- **Practice** — Adaptive continuation drills by default, with the original one-move trainer available as Quick mode;
-- **Why is this best?** — after an attempt, lazily analyze one position and explain the best move using Stockfish's line plus deterministic board facts;
-- **Mistakes** — browse active mistake/blunder positions and evaluation losses;
-- **Progress** — review activity, mastery, motif/opening accuracy, and separate adaptive calculation metrics;
-- **Pipeline** — Sync, Analyze, Features, Puzzles, Train, and Report with live progress.
+Chess Coach imports games through Chess.com's public, read-only API. Stockfish evaluates the moves, and the pipeline uses the analysis to build a personal puzzle bank and extract features for the mistake-risk model. Practice results determine when each puzzle is due again.
+
+## Local profiles
 
 ### Multiple players
 
@@ -408,81 +343,18 @@ Default CPL boundaries:
 | Mistake | `100–199` |
 | Blunder | `>= 200` |
 
-## Hosted persistence foundation
+## Local and hosted modes
 
-Local filesystem persistence remains the default. It does not require Supabase:
+| Mode | Analysis | Data and access |
+| --- | --- | --- |
+| Local, the default for self-hosted development | Native Stockfish and LightGBM | Files and SQLite under the local profile. Binds to localhost by default. |
+| Hosted | Stockfish WebAssembly and a lightweight model run in the browser | Email sign-in through Supabase. PostgreSQL and private object storage hold hosted data and analysis checkpoints. |
 
-```bash
-chess-coach ui
-```
+Hosted analysis is opt-in for operators. A browser can resume shared analysis from a saved checkpoint. The server validates game identity, structure, and move legality, and labels evaluations **community computed**.
 
-Hosted persistence is opt-in and requires a PostgreSQL connection string from Supabase:
+See the [hosted browser analysis runbook](docs/hosted-browser-analysis-runbook.md) for configuration, migrations, authentication, and rollout. See the [auth email runbook](docs/auth-email-runbook.md) for email delivery setup.
 
-```bash
-export CHESS_COACH_PERSISTENCE_MODE=hosted
-export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/postgres'
-chess-coach db-migrate
-```
-
-`db-migrate` applies ordered migrations and is safe to run repeatedly. Never commit
-`DATABASE_URL`; use deployment secrets. Setting hosted mode alone does not yet convert
-the existing profile APIs to multi-user behavior — profile claiming and entitlements
-are introduced in a later phase.
-
-### Hosted authentication
-
-Authenticated hosted endpoints live under `/api/hosted/` and require a Supabase
-session token. Only the project URL is needed:
-
-```bash
-export SUPABASE_URL='https://<project-ref>.supabase.co'
-```
-
-The server verifies each token against the project's published signing keys
-(`$SUPABASE_URL/auth/v1/.well-known/jwks.json`, cached and refreshed on key
-rotation). It accepts only asymmetric ES256/RS256 signatures, and requires the
-`authenticated` audience, the project's `/auth/v1` issuer, an expiry, and a subject.
-Shared-secret (HS256) and unsigned tokens are rejected. No JWT secret is configured
-anywhere.
-
-Smoke-test with a real session token:
-
-```bash
-curl -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
-  http://127.0.0.1:8000/api/hosted/account/me
-```
-
-A missing or invalid token returns `401`. A hosted deployment without `SUPABASE_URL`
-returns `503` from authenticated routes.
-
-### Hosted browser analysis
-
-In hosted mode the server never runs Stockfish or stores analysis on its disk. A
-signed-in user's browser runs Stockfish 19 (lite, single-threaded WebAssembly) in a Web
-Worker. It checkpoints progress to private Supabase Storage and publishes puzzles, a
-coaching report, and a lightweight mistake model. One shared job exists per player,
-game set, and analysis configuration, and one browser at a time holds its renewable
-60-second lease. Everyone else watches the progress, and if the worker's tab closes,
-another subscribed browser resumes from the last checkpoint. Results are labelled
-**community computed**: the server validates structure, game identity, and move legality,
-but cannot re-verify engine evaluations.
-
-The feature is off by default (`CHESS_COACH_HOSTED_BROWSER_ANALYSIS_ENABLED=false`) and
-also needs `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (browser-safe) and
-`SUPABASE_SECRET_KEY` (server only, never sent to browsers or logged). Merging code does
-not deploy or enable it. Follow
-[docs/hosted-browser-analysis-runbook.md](docs/hosted-browser-analysis-runbook.md) for
-migrations, the Storage bucket, Realtime, and a staged rollout. Browsers need
-WebAssembly, Web Workers, IndexedDB, compression streams, and Web Crypto. Phones and
-data-saver devices only observe by default.
-
-The browser pipeline matches the Python pipeline on a committed fixture
-(`tests/fixtures/browser_parity.json`). Regenerate it with
-`.venv/bin/python tests/browser_parity.py > tests/fixtures/browser_parity.json` whenever
-classification, features, puzzles, or the report change, then update the TypeScript
-port until `web/src/analysis/parity.test.ts` passes.
-
-#### Stockfish license
+### Stockfish license
 
 The web build bundles [Stockfish.js](https://github.com/nmrugg/stockfish.js) 19.0.0
 (`stockfish-19-lite-single.js`/`.wasm`) from the `stockfish` npm package, © the
@@ -542,4 +414,4 @@ High-value follow-ups include:
 - rolling 7/30/90-day improvement tracking;
 - SHAP explanations for the personalized LightGBM risk model;
 - richer board arrows, hints, and variation exploration;
-- a separate authenticated architecture if this becomes a hosted service rather than a local community tool.
+- a playable sample puzzle for visitors before sign-in.

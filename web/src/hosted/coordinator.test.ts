@@ -50,7 +50,7 @@ async function fixture(options: { computeAllowed?: boolean; active?: boolean; se
   const manifestBytes = body
   const manifest: ManifestResponse = {
     manifest_hash: manifestHash, download_url: 'signed://manifest', expires_in: 60,
-    total_units: 1, analysis_config_hash: analysisConfigHash,
+    total_units: 1, units: ['g1'], analysis_config_hash: analysisConfigHash,
     engine_build_hash: await sha256Hex(canonicalJson(ENGINE_BUILD)), analysis_config: config,
   }
   const name = `coordinator-test-${++serial}`
@@ -68,13 +68,13 @@ async function fixture(options: { computeAllowed?: boolean; active?: boolean; se
     claim: vi.fn(async () => options.grant ?? lease()), renew: vi.fn(async () => lease()),
     release: vi.fn(async () => undefined), stop: vi.fn(async () => job({ subscription_state: 'stopped' })),
     setCompute: vi.fn(async () => job()), manifest: vi.fn(async () => manifest),
-    upload: vi.fn(), finalizeCheckpoint: vi.fn(), checkpoints: vi.fn(), finalizeArtifact: vi.fn(), complete: vi.fn(),
+    upload: vi.fn(), finalizeCheckpoint: vi.fn(),
   }
   const putSigned = vi.fn(async () => undefined)
   const downloadSigned = vi.fn(async () => manifestBytes)
   const coordinator = new AnalysisCoordinator({
     api: api as unknown as CoordinatorDeps['api'], store, createEngine: () => engine,
-    derive: vi.fn(), deviceId: 'device', computeAllowed: options.computeAllowed ?? true,
+    deviceId: 'device', computeAllowed: options.computeAllowed ?? true,
     limits: { maxUploadBytes: 8 * 1024 * 1024, maxDecompressedBytes: 32 * 1024 * 1024 },
     downloadSigned,
     putSigned,
@@ -318,10 +318,11 @@ test('uploads and finalizes a checkpoint, then evicts its acknowledged local row
   const { api, coordinator, store, putSigned } = await fixture({ search })
   api.upload.mockResolvedValue({ storage_key: 'checkpoint', upload_url: 'signed://checkpoint', content_type: 'application/gzip', expires_at: '', already_finalized: false })
   api.finalizeCheckpoint.mockResolvedValue({ sequence: 1, content_hash: '', byte_size: 1, result_count: 1, first_unit: 0, last_unit: 0 })
-  api.checkpoints.mockImplementation(() => deferred<never>().promise)
   await coordinator.start('job')
   await vi.waitFor(() => expect(api.finalizeCheckpoint).toHaveBeenCalledOnce())
   expect(putSigned).toHaveBeenCalledOnce()
+  // The last checkpoint finishes the job; the server marks it succeeded.
+  await vi.waitFor(() => expect(coordinator.current.state).toBe('succeeded'))
   expect(coordinator.current.job?.checkpoint_sequence).toBe(1)
   expect(await store.pendingBatch('job', 1, 0)).toBeNull()
   expect(await store.gameRows('job', 0, 'g1')).toBeNull()
@@ -344,7 +345,6 @@ test('a stale checkpoint acknowledgement cannot restore running after stopping',
   acknowledged.resolve()
   await turn()
   expect(coordinator.current.state).toBe('stopped')
-  expect(api.checkpoints).not.toHaveBeenCalled()
   coordinator.dispose()
 })
 
@@ -389,7 +389,6 @@ test('refresh resumes a sealed unacknowledged batch at the server sequence', asy
   await store.saveBatch(batch)
   api.upload.mockResolvedValue({ storage_key: 'checkpoint', upload_url: 'signed://checkpoint', content_type: 'application/gzip', expires_at: '', already_finalized: false })
   api.finalizeCheckpoint.mockResolvedValue({ sequence: 1, content_hash: batch.contentHash, byte_size: batch.bytes.byteLength, result_count: 1, first_unit: 0, last_unit: 0 })
-  api.checkpoints.mockImplementation(() => deferred<never>().promise)
   await coordinator.start('job')
   await vi.waitFor(() => expect(api.finalizeCheckpoint).toHaveBeenCalledOnce())
   expect(api.upload).toHaveBeenCalledWith('job', expect.objectContaining({ sequence: 1, content_hash: batch.contentHash }))

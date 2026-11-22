@@ -1,13 +1,12 @@
 // Browser coordinator for shared analysis: observe a job, claim and renew its worker
-// lease, analyze games in the engine worker, checkpoint them to Storage, and derive
-// and publish results.
+// lease, analyze the job's games in the engine worker, and checkpoint them to Storage.
+// The server finishes the job when the last checkpoint lands.
 //
 // Every asynchronous step belongs to a "generation". Losing the lease, stopping,
 // going offline, or disposing starts a new generation and terminates the engine, so
 // a late completion from the old run can never upload or change state.
 import { analyzeGame, type MoveEngine, type ManifestGame } from '../analysis/classify'
 import { canonicalJson, sha256Hex } from '../analysis/hash'
-import { ARTIFACT_TYPES, type DeriveInput, type DerivedArtifacts } from '../analysis/pipeline'
 import { ENGINE_BUILD } from '../engine/protocol'
 import { downloadSigned, HostedApiError, putSigned, type HostedApi } from './api'
 import { isAnalysisRow, StorageQuotaError, type BatchRecord, type CheckpointStore } from './checkpointStore'
@@ -45,10 +44,9 @@ export type CoordinatorEnvironment = {
 export type CoordinatorDeps = {
   api: Pick<HostedApi,
     'job' | 'claim' | 'renew' | 'release' | 'stop' | 'setCompute' | 'manifest' | 'upload'
-    | 'finalizeCheckpoint' | 'checkpoints' | 'finalizeArtifact' | 'complete'>
+    | 'finalizeCheckpoint'>
   store: CheckpointStore
   createEngine: (depth: number) => EngineHandle
-  derive: (input: DeriveInput) => Promise<DerivedArtifacts>
   deviceId: string
   /** Capability and user opt-in; observers never claim. */
   computeAllowed: boolean
@@ -488,7 +486,9 @@ export class AnalysisCoordinator {
         sequence += 1
       }
       this.check(generation)
-      await this.deriveAndComplete(generation, jobId, manifest, games)
+      this.abandonRun('succeeded', null)
+      this.emit({ job: this.snapshot.job && { ...this.snapshot.job, status: 'succeeded', worker_active: false } })
+      await this.deps.store.clearJob(jobId).catch(() => undefined)
     } catch (error) {
       await this.handleRunError(generation, jobId, error)
     }
@@ -508,11 +508,15 @@ export class AnalysisCoordinator {
       const body = await gunzip(compressed, MANIFEST_MAX_BYTES)
       if (await sha256Hex(body) !== manifest.manifest_hash) throw new Error('The game list failed its integrity check')
       const document = JSON.parse(new TextDecoder().decode(body)) as unknown
-      if (!document || typeof document !== 'object' || !('games' in document)
-        || !Array.isArray(document.games) || document.games.length !== manifest.total_units) {
+      if (!document || typeof document !== 'object' || !('games' in document) || !Array.isArray(document.games)) {
         throw new Error('The game list does not match this analysis')
       }
-      return document.games as ManifestGame[]
+      const byId = new Map((document.games as ManifestGame[]).map((game) => [game.game_id, game]))
+      const games = manifest.units.map((id) => byId.get(id))
+      if (games.length !== manifest.total_units || games.some((game) => !game)) {
+        throw new Error('The game list does not match this analysis')
+      }
+      return games as ManifestGame[]
     }
     const cached = await this.deps.store.manifest(jobId, manifest.manifest_hash)
     if (cached) {
@@ -550,7 +554,7 @@ export class AnalysisCoordinator {
     this.check(generation)
     this.emit({ state: 'uploading' })
     const upload = await this.deps.api.upload(jobId, {
-      ...this.leaseBody(), kind: 'checkpoint', sequence: batch.sequence, byte_size: batch.bytes.byteLength,
+      ...this.leaseBody(), sequence: batch.sequence, byte_size: batch.bytes.byteLength,
       content_hash: batch.contentHash,
     })
     this.check(generation)
@@ -569,55 +573,6 @@ export class AnalysisCoordinator {
         ...this.snapshot.job, completed_units: batch.lastUnit + 1, checkpoint_sequence: batch.sequence,
       },
     })
-  }
-
-  private async deriveAndComplete(generation: number, jobId: string, manifest: ManifestResponse, games: ManifestGame[]): Promise<void> {
-    this.check(generation)
-    this.emit({ state: 'running', message: 'Building puzzles and your report' })
-    const listing = await this.deps.api.checkpoints(jobId)
-    this.check(generation)
-    const analysis = new Map<string, never[]>()
-    for (const checkpoint of listing.checkpoints) {
-      const bytes = await (this.deps.downloadSigned ?? downloadSigned)(checkpoint.download_url!, this.deps.limits.maxUploadBytes)
-      if (await sha256Hex(bytes) !== checkpoint.content_hash) throw new Error('A checkpoint failed its integrity check')
-      const payload = await gunzipJson<{ games: { game_id: string; rows: never[] }[] }>(bytes, this.deps.limits.maxDecompressedBytes)
-      payload.games.forEach((game) => analysis.set(game.game_id, game.rows))
-      this.check(generation)
-    }
-    const dependencyHash = await sha256Hex(canonicalJson({
-      analysis_config_hash: manifest.analysis_config_hash,
-      manifest_hash: manifest.manifest_hash,
-      checkpoints: listing.checkpoints.map((checkpoint) => checkpoint.content_hash),
-    }))
-    if (dependencyHash !== listing.dependency_hash) throw new Error('Checkpoints changed while building results')
-    const artifacts = await this.deps.derive({
-      games,
-      analysis,
-      minGroupSize: manifest.analysis_config.min_group_size,
-      dependencyHash,
-      analysisConfigHash: manifest.analysis_config_hash,
-    })
-    this.check(generation)
-    this.emit({ state: 'uploading' })
-    for (const type of ARTIFACT_TYPES) {
-      const bytes = await gzipJson(artifacts[type])
-      const contentHash = await sha256Hex(bytes)
-      const upload = await this.deps.api.upload(jobId, {
-        ...this.leaseBody(), kind: 'artifact', artifact_type: type, byte_size: bytes.byteLength, content_hash: contentHash,
-      })
-      this.check(generation)
-      if (!upload.already_finalized && upload.upload_url) {
-        await (this.deps.putSigned ?? putSigned)(upload.upload_url, bytes, upload.content_type)
-        this.check(generation)
-      }
-      await this.deps.api.finalizeArtifact(jobId, { ...this.leaseBody(), artifact_type: type, content_hash: contentHash })
-      this.check(generation)
-    }
-    const job = await this.deps.api.complete(jobId, this.leaseBody())
-    this.check(generation)
-    this.abandonRun('succeeded', null)
-    this.emit({ job })
-    await this.deps.store.clearJob(jobId).catch(() => undefined)
   }
 
   private async handleRunError(generation: number, jobId: string, error: unknown): Promise<void> {
